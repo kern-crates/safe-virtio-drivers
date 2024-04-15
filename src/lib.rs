@@ -1,14 +1,12 @@
 #![no_std]
-
 extern crate alloc;
 
-use std::os::unix::raw::dev_t;
-
 use alloc::boxed::Box;
+use log::info;
 
-pub struct BlkDriver {
-    ops: Box<dyn SvdOps>
-};
+pub const SECTOR_SIZE: usize = 512;
+pub const PAGE_SIZE: usize = 4096;
+const CONFIG_OFFSET: usize = 0x100;
 
 #[cfg(feature = "alien")]
 type Res<T> = AlienResult<T>;
@@ -21,19 +19,82 @@ pub trait SvdOps: Send + Sync {
     fn write_at(&self, off: usize, data: u32) -> Res<()>;
 }
 
+pub struct BlkDriver {
+    ops: Box<dyn SvdOps>,
+    queue: Option<VirtQueue<{ Self::QUEUE_SIZE }>>,
+}
+
 impl BlkDriver {
-    const SUPPORT_FEAT:u64 = BlkFeature::FLUSH;
+    const SUPPORT_FEAT: u64 = BlkFeature::FLUSH;
+    const QUEUE_SIZE: usize = 16;
     pub fn new(ops: Box<dyn SvdOps>) -> Res<Self> {
-        Ok( Self { ops } )
+        Ok(Self { ops, queue: None })
     }
-    pub fn init(&self) -> Res<()> {
+    pub fn init(&mut self) -> Res<()> {
         let header = VirtIOHeader::default();
         let ops = &self.ops;
         header.general_init(ops, Self::SUPPORT_FEAT)?;
-        Ok(())
+        // read config
+        let config = BlkConfig::default();
+        let capacity = ((config.capacity_high.read(ops)? as u64) << 32)
+            | (config.capacity_low.read(ops)? as u64);
+        info!("block device size: {}KB", capacity / 2);
+        // queue
+        let q = Some(VirtQueue::new().unwrap());
+
+        self.queue = q;
+        header.general_init_end(ops)
     }
-    pub fn read_blocks() -> Res(()) {}
-    pub fn write_blocks() -> Res(()) {}
+    /// assert_eq!(buf.len() % 512, 0)
+    pub fn read_blocks(&self, sector: usize, buf: &mut [u8]) -> Res<()> {
+        assert_ne!(buf.len(), 0);
+        assert_eq!(buf.len() % SECTOR_SIZE, 0);
+        todo!()
+    }
+    /// assert_eq!(buf.len() % 512, 0)
+    pub fn write_blocks(&self, sector: usize, buf: &[u8]) -> Res<()> {
+        assert_ne!(buf.len(), 0);
+        assert_eq!(buf.len() % SECTOR_SIZE, 0);
+        let header = VirtIOHeader::default();
+        let ops = &self.ops;
+        todo!()
+    }
+}
+
+struct BlkConfig {
+    capacity_low: ReadWrite<CONFIG_OFFSET>,
+    capacity_high: ReadWrite<{ CONFIG_OFFSET + 0x4 }>,
+    size_max: ReadWrite<{ CONFIG_OFFSET + 0x8 }>,
+    seg_max: ReadWrite<{ CONFIG_OFFSET + 0xc }>,
+
+    // cylinders: ReadWrite<u16>,
+    // heads: ReadWrite<u8>,
+    // sectors: ReadWrite<u8>,
+    geometry: ReadWrite<{ CONFIG_OFFSET + 0x10 }>,
+
+    blk_size: ReadWrite<{ CONFIG_OFFSET + 0x14 }>,
+
+    // physical_block_exp: ReadWrite<u8>,
+    // alignment_offset: ReadWrite<u8>,
+    // min_io_size: ReadWrite<u16>,
+    topology: ReadWrite<{ CONFIG_OFFSET + 0x18 }>,
+
+    opt_io_size: ReadWrite<{ CONFIG_OFFSET + 0x1c }>,
+    // ...
+}
+impl Default for BlkConfig {
+    fn default() -> Self {
+        Self {
+            capacity_low: ReadWrite,
+            capacity_high: ReadWrite,
+            size_max: ReadWrite,
+            seg_max: ReadWrite,
+            geometry: ReadWrite,
+            blk_size: ReadWrite,
+            topology: ReadWrite,
+            opt_io_size: ReadWrite,
+        }
+    }
 }
 
 /// MMIO Device Register Interface, both legacy and modern.
@@ -216,8 +277,8 @@ impl VirtIOHeader {
             return Err(());
         }
         let version = self.version.read(ops)?;
-        if version != 1 && version != 2  {
-            return  Err(());
+        if version != 1 && version != 2 {
+            return Err(());
         }
         if self.device_id.read(ops)? == 0 {
             return Err(());
@@ -232,7 +293,8 @@ impl VirtIOHeader {
         self.status.write(ops, stat)?;
         // 4. read features & cal features
         let device_feat = self.device_features.read(ops)?;
-        let ack_feat = device_feat & (driver_feat as u32);
+        let ack_feat = device_feat & (driver_feat as u32); // u64?
+
         // 5. write features
         self.driver_features.write(ops, ack_feat)?;
         // 6. status::feature_ok -> 1
@@ -243,12 +305,19 @@ impl VirtIOHeader {
         if stat != status {
             return Err(());
         }
-        // 8. device specific config
-        self.legacy_guest_page_size.write(ops, 4096)?;
-        // 9. status::driver_ok -> 1
-        stat |= DeviceStatus::DRIVER_OK;
-        self.status.write(ops, stat)?;
+        // 8. device specific config ?????
+        if version == 1 {
+            self.legacy_guest_page_size.write(ops, PAGE_SIZE as u32)?;
+        }
         Ok(())
+    }
+    fn general_init_end(&self, ops: &Box<dyn SvdOps>) -> Res<()> {
+        // 9. status::driver_ok -> 1
+        let stat = DeviceStatus::ACKNOWLEDGE
+            | DeviceStatus::DRIVER
+            | DeviceStatus::FEATURES_OK
+            | DeviceStatus::DRIVER_OK;
+        self.status.write(ops, stat)
     }
 }
 
@@ -275,84 +344,180 @@ impl<const OFF: usize> ReadWrite<OFF> {
     }
 }
 
-const MAGIC:u32 = 0x_7472_6976;
+const MAGIC: u32 = 0x_7472_6976;
 struct DeviceStatus;
 impl DeviceStatus {
-/// Indicates that the guest OS has found the device and recognized it
-/// as a valid virtio device.
-const ACKNOWLEDGE :u32= 1;
+    /// Indicates that the guest OS has found the device and recognized it
+    /// as a valid virtio device.
+    const ACKNOWLEDGE: u32 = 1;
 
-/// Indicates that the guest OS knows how to drive the device.
-const DRIVER :u32= 2;
+    /// Indicates that the guest OS knows how to drive the device.
+    const DRIVER: u32 = 2;
 
-/// Indicates that something went wrong in the guest, and it has given
-/// up on the device. This could be an internal error, or the driver
-/// didn’t like the device for some reason, or even a fatal error
-/// during device operation.
-const FAILED :u32= 128;
+    /// Indicates that something went wrong in the guest, and it has given
+    /// up on the device. This could be an internal error, or the driver
+    /// didn’t like the device for some reason, or even a fatal error
+    /// during device operation.
+    const FAILED: u32 = 128;
 
-/// Indicates that the driver has acknowledged all the features it
-/// understands, and feature negotiation is complete.
-const FEATURES_OK:u32 = 8;
+    /// Indicates that the driver has acknowledged all the features it
+    /// understands, and feature negotiation is complete.
+    const FEATURES_OK: u32 = 8;
 
-/// Indicates that the driver is set up and ready to drive the device.
-const DRIVER_OK :u32= 4;
+    /// Indicates that the driver is set up and ready to drive the device.
+    const DRIVER_OK: u32 = 4;
 
-/// Indicates that the device has experienced an error from which it
-/// can’t recover.
-const DEVICE_NEEDS_RESET:u32 = 64;
+    /// Indicates that the device has experienced an error from which it
+    /// can’t recover.
+    const DEVICE_NEEDS_RESET: u32 = 64;
 }
 
 struct BlkFeature;
 impl BlkFeature {
     /// Device supports request barriers. (legacy)
-    const BARRIER:u64       = 1 << 0;
+    const BARRIER: u64 = 1 << 0;
     /// Maximum size of any single segment is in `size_max`.
-    const SIZE_MAX:u64      = 1 << 1;
+    const SIZE_MAX: u64 = 1 << 1;
     /// Maximum number of segments in a request is in `seg_max`.
-    const SEG_MAX:u64       = 1 << 2;
+    const SEG_MAX: u64 = 1 << 2;
     /// Disk-style geometry specified in geometry.
-    const GEOMETRY:u64      = 1 << 4;
+    const GEOMETRY: u64 = 1 << 4;
     /// Device is read-only.
-    const RO:u64            = 1 << 5;
+    const RO: u64 = 1 << 5;
     /// Block size of disk is in `blk_size`.
-    const BLK_SIZE:u64      = 1 << 6;
+    const BLK_SIZE: u64 = 1 << 6;
     /// Device supports scsi packet commands. (legacy)
-    const SCSI:u64          = 1 << 7;
+    const SCSI: u64 = 1 << 7;
     /// Cache flush command support.
-    const FLUSH:u64         = 1 << 9;
+    const FLUSH: u64 = 1 << 9;
     /// Device exports information on optimal I/O alignment.
-    const TOPOLOGY:u64      = 1 << 10;
+    const TOPOLOGY: u64 = 1 << 10;
     /// Device can toggle its cache between writeback and writethrough modes.
-    const CONFIG_WCE:u64    = 1 << 11;
+    const CONFIG_WCE: u64 = 1 << 11;
     /// Device supports multiqueue.
-    const MQ:u64            = 1 << 12;
+    const MQ: u64 = 1 << 12;
     /// Device can support discard command; maximum discard sectors size in
     /// `max_discard_sectors` and maximum discard segment number in
     /// `max_discard_seg`.
-    const DISCARD:u64       = 1 << 13;
+    const DISCARD: u64 = 1 << 13;
     /// Device can support write zeroes command; maximum write zeroes sectors
     /// size in `max_write_zeroes_sectors` and maximum write zeroes segment
     /// number in `max_write_zeroes_seg`.
-    const WRITE_ZEROES:u64  = 1 << 14;
+    const WRITE_ZEROES: u64 = 1 << 14;
     /// Device supports providing storage lifetime information.
-    const LIFETIME:u64      = 1 << 15;
+    const LIFETIME: u64 = 1 << 15;
     /// Device can support the secure erase command.
-    const SECURE_ERASE:u64  = 1 << 16;
+    const SECURE_ERASE: u64 = 1 << 16;
 
     // device independent
-    const NOTIFY_ON_EMPTY:u64       = 1 << 24; // legacy
-    const ANY_LAYOUT:u64            = 1 << 27; // legacy
-    const RING_INDIRECT_DESC:u64    = 1 << 28;
-    const RING_EVENT_IDX:u64        = 1 << 29;
-    const UNUSED:u64                = 1 << 30; // legacy
-    const VERSION_1:u64             = 1 << 32; // detect legacy
+    const NOTIFY_ON_EMPTY: u64 = 1 << 24; // legacy
+    const ANY_LAYOUT: u64 = 1 << 27; // legacy
+    const RING_INDIRECT_DESC: u64 = 1 << 28;
+    const RING_EVENT_IDX: u64 = 1 << 29;
+    const UNUSED: u64 = 1 << 30; // legacy
+    const VERSION_1: u64 = 1 << 32; // detect legacy
 
     // the following since virtio v1.1
-    const ACCESS_PLATFORM:u64       = 1 << 33;
-    const RING_PACKED:u64           = 1 << 34;
-    const IN_ORDER:u64              = 1 << 35;
-    const ORDER_PLATFORM:u64        = 1 << 36;
-    const SR_IOV:u64                = 1 << 37;
-    const NOTIFICATION_DATA:u64     = 1 << 38;
+    const ACCESS_PLATFORM: u64 = 1 << 33;
+    const RING_PACKED: u64 = 1 << 34;
+    const IN_ORDER: u64 = 1 << 35;
+    const ORDER_PLATFORM: u64 = 1 << 36;
+    const SR_IOV: u64 = 1 << 37;
+    const NOTIFICATION_DATA: u64 = 1 << 38;
+}
+
+struct VirtQueue<const SIZE: usize> {
+    desc: Box<[Descriptor; SIZE]>,
+    avail: Box<AvailRing<SIZE>>,
+    used: Box<UsedRing<SIZE>>,
+}
+impl<const SIZE: usize> VirtQueue<SIZE> {
+    fn new() -> Res<Self> {
+        Ok(Self {
+            desc: Box::new([Descriptor::default(); SIZE]),
+            avail: Box::new(AvailRing::new()),
+            used: Box::new(UsedRing::new()),
+        })
+    }
+    fn push(&self) -> Self {
+        todo!()
+    }
+}
+
+#[repr(C, align(16))]
+#[derive(Debug, Clone, Copy)]
+struct Descriptor {
+    addr: u64,
+    len: u32,
+    flags: u16,
+    next: u16,
+}
+impl Default for Descriptor {
+    fn default() -> Self {
+        Self {
+            addr: Default::default(),
+            len: Default::default(),
+            flags: Default::default(),
+            next: Default::default(),
+        }
+    }
+}
+struct DescFlag;
+impl DescFlag {
+    const NEXT: u16 = 1;
+    const WRITE: u16 = 2;
+    const INDIRECT: u16 = 4;
+}
+#[repr(C)]
+#[derive(Debug)]
+struct AvailRing<const SIZE: usize> {
+    flags: u16,
+    /// A driver MUST NOT decrement the idx.
+    idx: u16,
+    ring: [u16; SIZE],
+    /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
+    used_event: u16,
+}
+impl<const SIZE: usize> AvailRing<SIZE> {
+    fn new() -> Self {
+        Self {
+            flags: Default::default(),
+            idx: Default::default(),
+            ring: [Default::default(); SIZE],
+            used_event: Default::default(),
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug)]
+struct UsedRing<const SIZE: usize> {
+    flags: u16,
+    idx: u16,
+    ring: [UsedElem; SIZE],
+    /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
+    avail_event: u16,
+}
+impl<const SIZE: usize> UsedRing<SIZE> {
+    fn new() -> Self {
+        Self {
+            flags: Default::default(),
+            idx: Default::default(),
+            ring: [Default::default(); SIZE],
+            avail_event: Default::default(),
+        }
+    }
+}
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+struct UsedElem {
+    id: u32,
+    len: u32,
+}
+impl Default for UsedElem {
+    fn default() -> Self {
+        Self {
+            id: Default::default(),
+            len: Default::default(),
+        }
+    }
 }
