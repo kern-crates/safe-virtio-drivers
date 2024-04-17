@@ -1,8 +1,17 @@
 #![no_std]
 extern crate alloc;
 
-use alloc::boxed::Box;
-use log::info;
+use core::{
+    hint::spin_loop,
+    mem::{size_of, size_of_val},
+};
+
+use alloc::{
+    boxed::Box,
+    collections::{BTreeSet, VecDeque},
+    vec::Vec,
+};
+use log::{info, warn};
 
 pub const SECTOR_SIZE: usize = 512;
 pub const PAGE_SIZE: usize = 4096;
@@ -19,46 +28,143 @@ pub trait SvdOps: Send + Sync {
     fn write_at(&self, off: usize, data: u32) -> Res<()>;
 }
 
-pub struct BlkDriver {
+pub struct BlkDriver<'a> {
     ops: Box<dyn SvdOps>,
-    queue: Option<VirtQueue<{ Self::QUEUE_SIZE }>>,
+    queue: VirtQueue<'a, { BlkDriver::QUEUE_SIZE }>,
 }
 
-impl BlkDriver {
+impl<'a> BlkDriver<'a> {
     const SUPPORT_FEAT: u64 = BlkFeature::FLUSH;
-    const QUEUE_SIZE: usize = 16;
-    pub fn new(ops: Box<dyn SvdOps>) -> Res<Self> {
-        Ok(Self { ops, queue: None })
-    }
-    pub fn init(&mut self) -> Res<()> {
+    pub const QUEUE_SIZE: usize = 16;
+
+    pub fn new(
+        ops: Box<dyn SvdOps>,
+        mut vq: VirtQueue<'a, { BlkDriver::QUEUE_SIZE }>,
+    ) -> Res<Self> {
         let header = VirtIOHeader::default();
-        let ops = &self.ops;
-        header.general_init(ops, Self::SUPPORT_FEAT)?;
+        header.general_init(&ops, Self::SUPPORT_FEAT)?;
         // read config
         let config = BlkConfig::default();
-        let capacity = ((config.capacity_high.read(ops)? as u64) << 32)
-            | (config.capacity_low.read(ops)? as u64);
+        let capacity = ((config.capacity_high.read(&ops)? as u64) << 32)
+            | (config.capacity_low.read(&ops)? as u64);
         info!("block device size: {}KB", capacity / 2);
-        // queue
-        let q = Some(VirtQueue::new().unwrap());
-
-        self.queue = q;
-        header.general_init_end(ops)
+        // set queue
+        vq.init();
+        if header.is_legacy(&ops)? {
+            let size = Self::QUEUE_SIZE;
+            let align = PAGE_SIZE as u32;
+            let pfn = (vq.desc_pa() / PAGE_SIZE) as u32;
+            // if desc_pa can be divided by PAGE_SIZE
+            assert_eq!(pfn as usize * PAGE_SIZE, vq.desc_pa());
+            // queue index
+            header.queue_sel.write(&ops, 0)?;
+            let qm = header.queue_num_max.read(&ops)? as usize;
+            if qm < size {
+                return Err(());
+            }
+            header.queue_num.write(&ops, size as u32)?;
+            header.legacy_queue_align.write(&ops, align)?;
+            header.legacy_queue_pfn.write(&ops, pfn)?;
+        } else {
+            // modern interface
+            todo!("modern interface do not implement yet. please use the legacy instead.");
+        }
+        header.general_init_end(&ops)?;
+        Ok(Self { ops, queue: vq })
     }
     /// assert_eq!(buf.len() % 512, 0)
-    pub fn read_blocks(&self, sector: usize, buf: &mut [u8]) -> Res<()> {
+    pub fn read_blocks(&mut self, sector: usize, buf: &mut [u8]) -> Res<()> {
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
         todo!()
     }
     /// assert_eq!(buf.len() % 512, 0)
-    pub fn write_blocks(&self, sector: usize, buf: &[u8]) -> Res<()> {
+    pub fn write_blocks(&mut self, sector: usize, buf: &[u8]) -> Res<()> {
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
+        warn!("in write : avail idx = {}", self.queue.avail.idx);
         let header = VirtIOHeader::default();
         let ops = &self.ops;
-        todo!()
+
+        let mut v = Vec::new();
+        let req = BlkReqHeader::new(BlkReqType::Out, sector as u64);
+        let resp = BlkRespStatus::NONE;
+        // get the physical address of header
+        v.push(Descriptor::new(
+            &req as *const _ as _,
+            size_of_val(&req) as _,
+            DescFlag::NEXT,
+        ));
+        v.push(Descriptor::new(
+            buf as *const _ as *const u8 as _,
+            buf.len() as _,
+            DescFlag::NEXT,
+        ));
+        v.push(Descriptor::new(
+            &resp as *const _ as _,
+            size_of_val(&resp) as _,
+            DescFlag::WRITE,
+        ));
+        let token = self.queue.push(v)?;
+        // notify the device
+        header.queue_notify.write(ops, 0)?;
+        warn!("pushed");
+        // wait
+        let mut counter = 0;
+        while !self.queue.is_ready(token)? {
+            counter += 1;
+            if counter % 1000000 == 0 {
+                warn!("counter : {counter}");
+            }
+            spin_loop();
+        }
+        info!("pop");
+        // get resp & pop queue
+        self.queue.pop(token)?;
+        assert_eq!(resp, BlkRespStatus::OK);
+        info!("write finish");
+        Ok(())
     }
+}
+#[repr(C)]
+#[derive(Debug)]
+struct BlkReqHeader {
+    type_: BlkReqType,
+    reserved: u32,
+    sector: u64,
+}
+impl BlkReqHeader {
+    fn new(t: BlkReqType, sector: u64) -> Self {
+        Self {
+            type_: t,
+            reserved: 0,
+            sector,
+        }
+    }
+}
+#[repr(u32)]
+#[derive(Debug)]
+enum BlkReqType {
+    /// read
+    In = 0,
+    /// write
+    Out = 1,
+    Flush = 4,
+    GetId = 8,
+    GetLifetime = 10,
+    Discard = 11,
+    WriteZeroes = 13,
+    SecureErase = 14,
+}
+struct BlkRespStatus;
+impl BlkRespStatus {
+    /// not ready yet
+    const NONE: u8 = u8::MAX;
+    const OK: u8 = 0;
+    /// IoErr.
+    const IO_ERR: u8 = 1;
+    /// Unsupported yet.
+    const UNSUPPORTED: u8 = 2;
 }
 
 struct BlkConfig {
@@ -272,6 +378,9 @@ impl Default for VirtIOHeader {
 }
 
 impl VirtIOHeader {
+    fn is_legacy(&self, ops: &Box<dyn SvdOps>) -> Res<bool> {
+        Ok(self.version.read(ops)? == 1)
+    }
     fn general_init(&self, ops: &Box<dyn SvdOps>, driver_feat: u64) -> Res<()> {
         if self.magic.read(ops)? != MAGIC {
             return Err(());
@@ -426,27 +535,129 @@ impl BlkFeature {
     const NOTIFICATION_DATA: u64 = 1 << 38;
 }
 
-struct VirtQueue<const SIZE: usize> {
-    desc: Box<[Descriptor; SIZE]>,
-    avail: Box<AvailRing<SIZE>>,
-    used: Box<UsedRing<SIZE>>,
+pub struct VirtQueue<'a, const SIZE: usize> {
+    desc: &'a mut [Descriptor; SIZE],
+    avail: &'a mut AvailRing<SIZE>,
+    used: &'a mut UsedRing<SIZE>,
+    desc_pa: usize,
+    // real queue, storage available descriptor indexes
+    q: VecDeque<u16>,
+    last_seen_used: u16,
+    poped_used: BTreeSet<u16>,
 }
-impl<const SIZE: usize> VirtQueue<SIZE> {
-    fn new() -> Res<Self> {
+impl<'a, const SIZE: usize> VirtQueue<'a, SIZE> {
+    pub fn new(
+        desc: &'a mut [Descriptor; SIZE],
+        avail: &'a mut AvailRing<SIZE>,
+        used: &'a mut UsedRing<SIZE>,
+        desc_pa: usize,
+    ) -> Res<Self> {
+        let q = VecDeque::from_iter(0..SIZE as u16);
         Ok(Self {
-            desc: Box::new([Descriptor::default(); SIZE]),
-            avail: Box::new(AvailRing::new()),
-            used: Box::new(UsedRing::new()),
+            desc,
+            avail,
+            used,
+            desc_pa,
+            q,
+            last_seen_used: 0,
+            poped_used: BTreeSet::new(),
         })
     }
-    fn push(&self) -> Self {
-        todo!()
+    fn desc_pa(&self) -> usize {
+        self.desc_pa
+    }
+    fn avail_pa(&self) -> usize {
+        // don't use `Self::avail_offset` for speed
+        self.desc_pa + size_of::<Descriptor>() * SIZE
+    }
+    fn used_pa(&self) -> usize {
+        // don't use `Self::used_offset` for speed
+        self.desc_pa + align_up(size_of::<Descriptor>() * SIZE + size_of::<u16>() * (SIZE + 3))
+    }
+    pub fn avail_offset() -> Res<usize> {
+        Ok(size_of::<Descriptor>() * SIZE)
+    }
+    pub fn used_offset() -> Res<usize> {
+        Ok(align_up(size_of::<Descriptor>() * SIZE) + size_of::<AvailRing<SIZE>>())
+    }
+    pub fn total_size() -> Res<usize> {
+        Ok(
+            align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>())
+                + align_up(size_of::<UsedRing<SIZE>>()),
+        )
+    }
+    fn init(&mut self) {
+        self.avail.init();
+    }
+    fn push(&mut self, mut data: Vec<Descriptor>) -> Res<u16> {
+        assert_ne!(data.len(), 0);
+        if self.q.len() < data.len() {
+            return Err(());
+        }
+        let mut last = None;
+        for d in data.iter_mut().rev() {
+            let id = self.q.pop_front().unwrap();
+
+            if let Some(nex) = last {
+                d.next = nex;
+            }
+            warn!(
+                "buffer len : {} id={} nex_flag={}, nex={} | idx = {}",
+                d.len,
+                id,
+                d.flags & DescFlag::NEXT,
+                d.next,
+                self.avail.idx
+            );
+            //  write desc to self.desc
+            self.desc[id as usize % SIZE] = *d;
+            last = Some(id);
+        }
+        let head = last.unwrap();
+        // change the avail ring
+        self.avail.push(head)?;
+        Ok(head)
+    }
+    fn is_ready(&self, id: u16) -> Res<bool> {
+        if self.last_seen_used == self.used.idx {
+            return Ok(false);
+        }
+        for i in self.last_seen_used..self.used.idx {
+            if self.used.ring[i as usize % SIZE].id == id as u32 {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    fn pop(&mut self, id: u16) -> Res<()> {
+        assert!(self.last_seen_used < self.used.idx);
+        let mut header = self.last_seen_used - 1;
+        for i in self.last_seen_used..self.used.idx {
+            if self.used.ring[i as usize % SIZE].id == id as u32 {
+                // pop this
+                header = i;
+                break;
+            }
+        }
+        assert_ne!(header, self.last_seen_used - 1);
+        self.poped_used.insert(header);
+        let mut now = self.used.ring[header as usize].id as usize;
+        while (self.desc[now].flags & DescFlag::NEXT) != 0 {
+            now = self.desc[now as usize].next as _;
+        }
+        // update last_seen_used
+        while self.poped_used.contains(&self.last_seen_used) {
+            self.poped_used.remove(&self.last_seen_used);
+            self.last_seen_used += 1;
+        }
+        // return value
+        Ok(())
     }
 }
 
 #[repr(C, align(16))]
 #[derive(Debug, Clone, Copy)]
-struct Descriptor {
+pub struct Descriptor {
     addr: u64,
     len: u32,
     flags: u16,
@@ -462,6 +673,16 @@ impl Default for Descriptor {
         }
     }
 }
+impl Descriptor {
+    fn new(addr: u64, len: u32, flags: u16) -> Self {
+        Self {
+            addr,
+            len,
+            flags,
+            next: 0,
+        }
+    }
+}
 struct DescFlag;
 impl DescFlag {
     const NEXT: u16 = 1;
@@ -470,7 +691,7 @@ impl DescFlag {
 }
 #[repr(C)]
 #[derive(Debug)]
-struct AvailRing<const SIZE: usize> {
+pub struct AvailRing<const SIZE: usize> {
     flags: u16,
     /// A driver MUST NOT decrement the idx.
     idx: u16,
@@ -479,18 +700,33 @@ struct AvailRing<const SIZE: usize> {
     used_event: u16,
 }
 impl<const SIZE: usize> AvailRing<SIZE> {
-    fn new() -> Self {
-        Self {
-            flags: Default::default(),
-            idx: Default::default(),
-            ring: [Default::default(); SIZE],
-            used_event: Default::default(),
-        }
+    // fn new() -> Self {
+    //     Self {
+    //         flags: Default::default(),
+    //         idx: Default::default(),
+    //         ring: [Default::default(); SIZE],
+    //         used_event: Default::default(),
+    //     }
+    // }
+    fn init(&mut self) {
+        self.flags = 0;
+        self.idx = 0;
+    }
+    fn push(&mut self, id: u16) -> Res<u16> {
+        // have enough space, because (avail ring's len == desc's)
+        self.ring[self.idx as usize % SIZE] = id;
+        warn!(
+            "avail pushed: id={} header={}",
+            self.idx,
+            self.ring[self.idx as usize % SIZE]
+        );
+        self.idx = self.idx + 1;
+        Ok(self.idx - 1)
     }
 }
 #[repr(C)]
 #[derive(Debug)]
-struct UsedRing<const SIZE: usize> {
+pub struct UsedRing<const SIZE: usize> {
     flags: u16,
     idx: u16,
     ring: [UsedElem; SIZE],
@@ -498,14 +734,14 @@ struct UsedRing<const SIZE: usize> {
     avail_event: u16,
 }
 impl<const SIZE: usize> UsedRing<SIZE> {
-    fn new() -> Self {
-        Self {
-            flags: Default::default(),
-            idx: Default::default(),
-            ring: [Default::default(); SIZE],
-            avail_event: Default::default(),
-        }
-    }
+    // fn new() -> Self {
+    //     Self {
+    //         flags: Default::default(),
+    //         idx: Default::default(),
+    //         ring: [Default::default(); SIZE],
+    //         avail_event: Default::default(),
+    //     }
+    // }
 }
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -513,11 +749,21 @@ struct UsedElem {
     id: u32,
     len: u32,
 }
-impl Default for UsedElem {
-    fn default() -> Self {
-        Self {
-            id: Default::default(),
-            len: Default::default(),
-        }
-    }
+// impl Default for UsedElem {
+//     fn default() -> Self {
+//         Self {
+//             id: Default::default(),
+//             len: Default::default(),
+//         }
+//     }
+// }
+
+/// Align `size` up to a page.
+fn align_up(size: usize) -> usize {
+    (size + PAGE_SIZE) & !(PAGE_SIZE - 1)
+}
+
+/// The number of pages required to store `size` bytes, rounded up to a whole number of pages.
+fn pages(size: usize) -> usize {
+    (size + PAGE_SIZE - 1) / PAGE_SIZE
 }
