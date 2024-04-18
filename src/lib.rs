@@ -1,16 +1,16 @@
 #![no_std]
 extern crate alloc;
 
-use core::{
-    hint::spin_loop,
-    mem::{size_of, size_of_val},
-};
-
 use alloc::{
     boxed::Box,
     collections::{BTreeSet, VecDeque},
     vec::Vec,
 };
+use core::{
+    hint::spin_loop,
+    mem::{size_of, size_of_val},
+};
+
 use log::info;
 
 pub const SECTOR_SIZE: usize = 512;
@@ -170,6 +170,9 @@ impl<'a> BlkDriver<'a> {
         let capacity = ((config.capacity_high.read(ops)? as u64) << 32)
             | (config.capacity_low.read(ops)? as u64);
         Ok(capacity)
+    }
+    pub fn flush(&mut self) -> Res<()> {
+        todo!()
     }
 }
 #[repr(C)]
