@@ -11,16 +11,13 @@ use alloc::{
     collections::{BTreeSet, VecDeque},
     vec::Vec,
 };
-use log::{info, warn};
+use log::info;
 
 pub const SECTOR_SIZE: usize = 512;
 pub const PAGE_SIZE: usize = 4096;
 const CONFIG_OFFSET: usize = 0x100;
 
-#[cfg(feature = "alien")]
-type Res<T> = AlienResult<T>;
-#[cfg(not(feature = "alien"))]
-type Res<T> = Result<T, ()>;
+type Res<T> = Result<T, &'static str>;
 
 // needs unsafe ???
 pub trait SvdOps: Send + Sync {
@@ -47,7 +44,7 @@ impl<'a> BlkDriver<'a> {
         let config = BlkConfig::default();
         let capacity = ((config.capacity_high.read(&ops)? as u64) << 32)
             | (config.capacity_low.read(&ops)? as u64);
-        info!("block device size: {}KB", capacity / 2);
+        info!("block device size: {}KB {}sector", capacity / 2, capacity);
         // set queue
         vq.init();
         if header.is_legacy(&ops)? {
@@ -60,7 +57,7 @@ impl<'a> BlkDriver<'a> {
             header.queue_sel.write(&ops, 0)?;
             let qm = header.queue_num_max.read(&ops)? as usize;
             if qm < size {
-                return Err(());
+                return Err("queue size is larger than what device support");
             }
             header.queue_num.write(&ops, size as u32)?;
             header.legacy_queue_align.write(&ops, align)?;
@@ -76,13 +73,54 @@ impl<'a> BlkDriver<'a> {
     pub fn read_blocks(&mut self, sector: usize, buf: &mut [u8]) -> Res<()> {
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
-        todo!()
+        // warn!("in read");
+        let header = VirtIOHeader::default();
+        let ops = &self.ops;
+
+        let mut v = Vec::new();
+        let req = BlkReqHeader::new(BlkReqType::In, sector as u64);
+        let resp = BlkRespStatus::NONE;
+        // get the physical address of header
+        v.push(Descriptor::new(
+            &req as *const _ as _,
+            size_of_val(&req) as _,
+            DescFlag::NEXT,
+        ));
+        v.push(Descriptor::new(
+            buf as *const _ as *const u8 as _,
+            buf.len() as _,
+            DescFlag::NEXT | DescFlag::WRITE,
+        ));
+        v.push(Descriptor::new(
+            &resp as *const _ as _,
+            size_of_val(&resp) as _,
+            DescFlag::WRITE,
+        ));
+        let token = self.queue.push(v)?;
+        // notify the device
+        header.queue_notify.write(ops, 0)?;
+        // warn!("pushed, status = {resp}");
+        // wait
+        let mut counter = 0;
+        while !self.queue.is_ready(token)? {
+            counter += 1;
+            if counter % 1000000000 == 0 {
+                info!("waiting read counter : {counter}");
+            }
+            spin_loop();
+        }
+        // info!("pop counter = {counter}");
+        // get resp & pop queue
+        self.queue.pop(token)?;
+        assert_eq!(resp, BlkRespStatus::OK);
+        // info!("read finish");
+        Ok(())
     }
     /// assert_eq!(buf.len() % 512, 0)
     pub fn write_blocks(&mut self, sector: usize, buf: &[u8]) -> Res<()> {
         assert_ne!(buf.len(), 0);
         assert_eq!(buf.len() % SECTOR_SIZE, 0);
-        warn!("in write : avail idx = {}", self.queue.avail.idx);
+        // warn!("in write");
         let header = VirtIOHeader::default();
         let ops = &self.ops;
 
@@ -108,22 +146,30 @@ impl<'a> BlkDriver<'a> {
         let token = self.queue.push(v)?;
         // notify the device
         header.queue_notify.write(ops, 0)?;
-        warn!("pushed");
+        // warn!("pushed");
         // wait
         let mut counter = 0;
         while !self.queue.is_ready(token)? {
             counter += 1;
             if counter % 1000000 == 0 {
-                warn!("counter : {counter}");
+                info!("waiting write counter : {counter}");
             }
             spin_loop();
         }
-        info!("pop");
+        // warn!("used: idx = {}", self.queue.used.idx);
+        // info!("pop counter = {counter}");
         // get resp & pop queue
         self.queue.pop(token)?;
         assert_eq!(resp, BlkRespStatus::OK);
-        info!("write finish");
+        // info!("write finish");
         Ok(())
+    }
+    pub fn capacity(&self) -> Res<u64> {
+        let config = BlkConfig::default();
+        let ops = &self.ops;
+        let capacity = ((config.capacity_high.read(ops)? as u64) << 32)
+            | (config.capacity_low.read(ops)? as u64);
+        Ok(capacity)
     }
 }
 #[repr(C)]
@@ -343,7 +389,6 @@ struct VirtIOHeader {
     // new interface
     config_generation: ReadOnly<0xfc>,
 }
-
 impl Default for VirtIOHeader {
     fn default() -> Self {
         Self {
@@ -376,21 +421,20 @@ impl Default for VirtIOHeader {
         }
     }
 }
-
 impl VirtIOHeader {
     fn is_legacy(&self, ops: &Box<dyn SvdOps>) -> Res<bool> {
         Ok(self.version.read(ops)? == 1)
     }
     fn general_init(&self, ops: &Box<dyn SvdOps>, driver_feat: u64) -> Res<()> {
         if self.magic.read(ops)? != MAGIC {
-            return Err(());
+            return Err("not a virtio device");
         }
         let version = self.version.read(ops)?;
         if version != 1 && version != 2 {
-            return Err(());
+            return Err("version not support, only support 1 or 2");
         }
         if self.device_id.read(ops)? == 0 {
-            return Err(());
+            return Err("device type_id is 0");
         }
         let mut stat = 0;
         // 1. write 0 in status
@@ -412,7 +456,7 @@ impl VirtIOHeader {
         // 7. re_read status::feature_ok == 1
         let status = self.status.read(ops)?;
         if stat != status {
-            return Err(());
+            return Err("device don't support some features");
         }
         // 8. device specific config ?????
         if version == 1 {
@@ -433,7 +477,6 @@ impl VirtIOHeader {
 struct ReadOnly<const OFF: usize>;
 struct WriteOnly<const OFF: usize>;
 struct ReadWrite<const OFF: usize>;
-
 impl<const OFF: usize> ReadOnly<OFF> {
     fn read(&self, ops: &Box<dyn SvdOps>) -> Res<u32> {
         ops.read_at(OFF)
@@ -578,7 +621,9 @@ impl<'a, const SIZE: usize> VirtQueue<'a, SIZE> {
         Ok(size_of::<Descriptor>() * SIZE)
     }
     pub fn used_offset() -> Res<usize> {
-        Ok(align_up(size_of::<Descriptor>() * SIZE) + size_of::<AvailRing<SIZE>>())
+        Ok(align_up(
+            size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>(),
+        ))
     }
     pub fn total_size() -> Res<usize> {
         Ok(
@@ -592,7 +637,7 @@ impl<'a, const SIZE: usize> VirtQueue<'a, SIZE> {
     fn push(&mut self, mut data: Vec<Descriptor>) -> Res<u16> {
         assert_ne!(data.len(), 0);
         if self.q.len() < data.len() {
-            return Err(());
+            return Err("too much data, cannot push in queue");
         }
         let mut last = None;
         for d in data.iter_mut().rev() {
@@ -601,14 +646,13 @@ impl<'a, const SIZE: usize> VirtQueue<'a, SIZE> {
             if let Some(nex) = last {
                 d.next = nex;
             }
-            warn!(
-                "buffer len : {} id={} nex_flag={}, nex={} | idx = {}",
-                d.len,
-                id,
-                d.flags & DescFlag::NEXT,
-                d.next,
-                self.avail.idx
-            );
+            // warn!(
+            //     "buffer len : {} id={} nex_flag={}, nex={}",
+            //     d.len,
+            //     id,
+            //     d.flags & DescFlag::NEXT,
+            //     d.next
+            // );
             //  write desc to self.desc
             self.desc[id as usize % SIZE] = *d;
             last = Some(id);
@@ -641,9 +685,11 @@ impl<'a, const SIZE: usize> VirtQueue<'a, SIZE> {
         }
         assert_ne!(header, self.last_seen_used - 1);
         self.poped_used.insert(header);
-        let mut now = self.used.ring[header as usize].id as usize;
+        let mut now = self.used.ring[header as usize % SIZE].id as usize;
+        self.q.push_back(now as _);
         while (self.desc[now].flags & DescFlag::NEXT) != 0 {
-            now = self.desc[now as usize].next as _;
+            now = self.desc[now as usize % SIZE].next as _;
+            self.q.push_back(now as _);
         }
         // update last_seen_used
         while self.poped_used.contains(&self.last_seen_used) {
@@ -715,11 +761,11 @@ impl<const SIZE: usize> AvailRing<SIZE> {
     fn push(&mut self, id: u16) -> Res<u16> {
         // have enough space, because (avail ring's len == desc's)
         self.ring[self.idx as usize % SIZE] = id;
-        warn!(
-            "avail pushed: id={} header={}",
-            self.idx,
-            self.ring[self.idx as usize % SIZE]
-        );
+        // warn!(
+        //     "avail pushed: id={} header={}",
+        //     self.idx,
+        //     self.ring[self.idx as usize % SIZE]
+        // );
         self.idx = self.idx + 1;
         Ok(self.idx - 1)
     }
