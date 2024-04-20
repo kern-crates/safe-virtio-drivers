@@ -1,9 +1,5 @@
-[package]
-name = "svdrivers"
-version = "0.1.0"
-edition = "2021"
+[workspace]
+members = [ "qemu","virtio-drivers"]
 
-[dependencies]
-log = "0"
 
-[features]
+resolver = "2"
