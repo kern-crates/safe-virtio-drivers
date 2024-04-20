@@ -5,7 +5,7 @@ use core::sync::atomic::Ordering;
 use safe_virtio_drivers::error::VirtIoResult;
 use safe_virtio_drivers::hal::{QueuePage, VirtIoDeviceIo};
 use safe_virtio_drivers::queue::{AvailRing, Descriptor, UsedRing};
-use safe_virtio_drivers::PAGE_SIZE;
+use safe_virtio_drivers::{PhysAddr, VirtAddr, PAGE_SIZE};
 
 pub struct MyHalImpl;
 
@@ -90,5 +90,13 @@ impl<const SIZE: usize> QueuePage<SIZE> for Page {
             let ptr = (self.pa + offset) as *mut UsedRing<SIZE>;
             &mut *ptr
         }
+    }
+
+    fn vaddr(&self) -> PhysAddr {
+        self.pa
+    }
+
+    fn paddr(&self) -> VirtAddr {
+        self.pa as VirtAddr
     }
 }

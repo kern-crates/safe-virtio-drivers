@@ -1,10 +1,10 @@
 use crate::error::VirtIoResult;
+use crate::hal::VirtIoDeviceIo;
 use crate::{PhysAddr, PAGE_SIZE};
 use bitflags::{bitflags, Flags};
 use core::fmt::Debug;
 use core::ops::BitAnd;
 use log::debug;
-
 pub mod mmio;
 
 /// A VirtIO transport layer.
@@ -19,19 +19,19 @@ pub trait Transport {
     fn write_driver_features(&mut self, driver_features: u64) -> VirtIoResult<()>;
 
     /// Gets the max size of the given queue.
-    fn max_queue_size(&mut self, queue: u16) -> u32;
+    fn max_queue_size(&mut self, queue: u16) -> VirtIoResult<u32>;
 
     /// Notifies the given queue on the device.
-    fn notify(&mut self, queue: u16);
+    fn notify(&mut self, queue: u16) -> VirtIoResult<()>;
 
     /// Gets the device status.
-    fn get_status(&self) -> DeviceStatus;
+    fn get_status(&self) -> VirtIoResult<DeviceStatus>;
 
     /// Sets the device status.
-    fn set_status(&mut self, status: DeviceStatus);
+    fn set_status(&mut self, status: DeviceStatus) -> VirtIoResult<()>;
 
     /// Sets the guest page size.
-    fn set_guest_page_size(&mut self, guest_page_size: u32);
+    fn set_guest_page_size(&mut self, guest_page_size: u32) -> VirtIoResult<()>;
 
     /// Returns whether the transport requires queues to use the legacy layout.
     ///
@@ -46,18 +46,18 @@ pub trait Transport {
         descriptors: PhysAddr,
         driver_area: PhysAddr,
         device_area: PhysAddr,
-    );
+    ) -> VirtIoResult<()>;
 
     /// Disables and resets the given queue.
-    fn queue_unset(&mut self, queue: u16);
+    fn queue_unset(&mut self, queue: u16) -> VirtIoResult<()>;
 
     /// Returns whether the queue is in use, i.e. has a nonzero PFN or is marked as ready.
-    fn queue_used(&mut self, queue: u16) -> bool;
+    fn queue_used(&mut self, queue: u16) -> VirtIoResult<bool>;
 
     /// Acknowledges an interrupt.
     ///
     /// Returns true on success.
-    fn ack_interrupt(&mut self) -> bool;
+    fn ack_interrupt(&mut self) -> VirtIoResult<bool>;
 
     /// Begins initializing the device.
     ///
@@ -68,8 +68,8 @@ pub trait Transport {
         &mut self,
         supported_features: F,
     ) -> VirtIoResult<F> {
-        self.set_status(DeviceStatus::empty());
-        self.set_status(DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER);
+        self.set_status(DeviceStatus::empty())?;
+        self.set_status(DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER)?;
 
         let device_features = F::from_bits_truncate(self.read_device_features()?);
         debug!("Device features: {:?}", device_features);
@@ -78,25 +78,24 @@ pub trait Transport {
 
         self.set_status(
             DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER | DeviceStatus::FEATURES_OK,
-        );
+        )?;
 
-        self.set_guest_page_size(PAGE_SIZE as u32);
+        self.set_guest_page_size(PAGE_SIZE as u32)?;
 
         Ok(negotiated_features)
     }
 
     /// Finishes initializing the device.
-    fn finish_init(&mut self) {
+    fn finish_init(&mut self) -> VirtIoResult<()> {
         self.set_status(
             DeviceStatus::ACKNOWLEDGE
                 | DeviceStatus::DRIVER
                 | DeviceStatus::FEATURES_OK
                 | DeviceStatus::DRIVER_OK,
-        );
+        )
     }
 
-    // Gets the pointer to the config space.
-    // fn config_space<T: 'static>(&self) -> Result<NonNull<T>>;
+    fn io_region(&self) -> &dyn VirtIoDeviceIo;
 }
 
 bitflags! {

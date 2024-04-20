@@ -1,55 +1,67 @@
 use crate::error::{VirtIoError, VirtIoResult};
-use crate::hal::QueuePage;
-use crate::{PhysAddr, PAGE_SIZE};
+use crate::hal::{Hal, QueuePage};
+use crate::transport::Transport;
+use crate::{align_up, pages};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeSet, VecDeque};
 use alloc::vec::Vec;
+use core::hint::spin_loop;
+use core::marker::PhantomData;
 use core::mem::size_of;
+
 use core::sync::atomic::{fence, Ordering};
-use log::info;
 
-/// Align `size` up to a page.
-const fn align_up(size: usize) -> usize {
-    (size + PAGE_SIZE) & !(PAGE_SIZE - 1)
-}
-
-pub struct VirtIoQueue<const SIZE: usize> {
+pub struct VirtIoQueue<H: Hal<SIZE>, const SIZE: usize> {
     queue_page: Box<dyn QueuePage<SIZE>>,
-    desc_pa: PhysAddr,
-    // real queue, storage available descriptor indexes
+    // storage available descriptor indexes
     avail_desc_index: VecDeque<u16>,
     last_seen_used: u16,
     poped_used: BTreeSet<u16>,
+    /// The index of queue
+    queue_idx: u16,
+    _hal: PhantomData<H>,
 }
 
-impl<const SIZE: usize> VirtIoQueue<SIZE> {
+impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     const AVAIL_RING_OFFSET: usize = size_of::<Descriptor>() * SIZE;
     const DESCRIPTOR_TABLE_OFFSET: usize = 0;
     const USED_RING_OFFSET: usize =
         align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>());
 
-    pub fn new(mut queue_page: Box<dyn QueuePage<SIZE>>) -> Self {
-        let desc_pa = queue_page
-            .as_descriptor_table_at(Self::DESCRIPTOR_TABLE_OFFSET)
-            .as_ptr() as usize;
+    pub fn new<T: Transport>(transport: &mut T, queue_idx: u16) -> VirtIoResult<Self> {
+        if transport.queue_used(queue_idx)? {
+            return Err(VirtIoError::AlreadyUsed);
+        }
+        if !SIZE.is_power_of_two()
+            || SIZE > u16::MAX.into()
+            || transport.max_queue_size(queue_idx)? < SIZE as u32
+        {
+            return Err(VirtIoError::InvalidParam);
+        }
+        let size = SIZE as u16;
+        let mut queue_page = H::dma_alloc(pages(Self::total_size()));
+        let descriptors_paddr = queue_page.paddr();
+        // eq to avail_ring_pa
+        let driver_area_paddr = descriptors_paddr + Self::AVAIL_RING_OFFSET;
+        let device_area_paddr = descriptors_paddr + Self::USED_RING_OFFSET;
+        transport.queue_set(
+            queue_idx,
+            size as _,
+            descriptors_paddr,
+            driver_area_paddr,
+            device_area_paddr,
+        )?;
         queue_page.as_mut_avail_ring(Self::AVAIL_RING_OFFSET).init();
+
         let avail_desc_index = VecDeque::from_iter(0..SIZE as u16);
-        VirtIoQueue {
+        Ok(VirtIoQueue {
             queue_page,
-            desc_pa,
+            queue_idx,
             avail_desc_index,
             last_seen_used: 0,
             poped_used: BTreeSet::new(),
-        }
-    }
-    pub(crate) fn desc_pa(&self) -> PhysAddr {
-        self.desc_pa
-    }
-    fn avail_ring_pa(&self) -> PhysAddr {
-        self.desc_pa + size_of::<Descriptor>() * SIZE
-    }
-    fn used_ring_pa(&self) -> PhysAddr {
-        self.desc_pa + align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>())
+            _hal: PhantomData,
+        })
     }
 
     pub(crate) const fn total_size() -> usize {
@@ -57,7 +69,59 @@ impl<const SIZE: usize> VirtIoQueue<SIZE> {
             + align_up(size_of::<UsedRing<SIZE>>())
     }
 
-    pub(crate) fn push(&mut self, mut data: Vec<Descriptor>) -> VirtIoResult<u16> {
+    /// Add the given buffers to the virtqueue, notifies the device, blocks until the device uses
+    /// them, then pops them.
+    ///
+    /// This assumes that the device isn't processing any other buffers at the same time.
+    ///
+    /// The buffers must not be empty.
+    pub fn add_notify_wait_pop<T: Transport>(
+        &mut self,
+        transport: &mut T,
+        descriptors: Vec<Descriptor>,
+    ) -> VirtIoResult<u32> {
+        let token = self.add(descriptors)?;
+        // Notify the queue.
+        if self.should_notify() {
+            transport.notify(self.queue_idx)?;
+        }
+        // Wait until there is at least one element in the used ring.
+        while !self.can_pop()? {
+            spin_loop();
+        }
+        self.pop_used(token)
+    }
+
+    /// Returns whether the driver should notify the device after adding a new buffer to the
+    /// virtqueue.
+    ///
+    /// This will be false if the device has supressed notifications.
+    pub fn should_notify(&self) -> bool {
+        // Read barrier, so we read a fresh value from the device.
+        fence(Ordering::SeqCst);
+        // if self.event_idx {
+        //     // instance of UsedRing.
+        //     let avail_event = unsafe { (*self.used.as_ptr()).avail_event };
+        //     self.avail_idx >= avail_event.wrapping_add(1)
+        // } else {
+        //     // instance of UsedRing.
+        //     unsafe { (*self.used.as_ptr()).flags & 0x0001 == 0 }
+        // }
+        // self.queue_page.as_used_ring(Self::USED_RING_OFFSET).avail_event
+        self.queue_page.as_used_ring(Self::USED_RING_OFFSET).flags & 0x0001 == 0
+    }
+
+    /// Add buffers to the virtqueue, return a token.
+    ///
+    /// The buffers must not be empty.
+    ///
+    /// Ref: linux virtio_ring.c virtqueue_add
+    ///
+    /// # Safety
+    ///
+    /// The input and output buffers must remain valid and not be accessed until a call to
+    /// `pop_used` with the returned token succeeds.
+    fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
         assert_ne!(data.len(), 0);
         if self.avail_desc_index.len() < data.len() {
             return Err(VirtIoError::QueueFull);
@@ -67,12 +131,12 @@ impl<const SIZE: usize> VirtIoQueue<SIZE> {
             .queue_page
             .as_mut_descriptor_table_at(Self::DESCRIPTOR_TABLE_OFFSET);
         let avail_ring = self.queue_page.as_mut_avail_ring(Self::AVAIL_RING_OFFSET);
-        for d in data.iter_mut().rev() {
+        for mut d in data.into_iter().rev() {
             let id = self.avail_desc_index.pop_front().unwrap();
             if let Some(nex) = last {
                 d.next = nex;
             }
-            desc[id as usize % SIZE] = *d;
+            desc[id as usize % SIZE] = d;
             last = Some(id);
         }
         let head = last.unwrap();
@@ -92,8 +156,19 @@ impl<const SIZE: usize> VirtIoQueue<SIZE> {
         }
         Ok(false)
     }
-
-    pub(crate) fn pop(&mut self, id: u16) -> VirtIoResult<()> {
+    /// If the given token is next on the device used queue, pops it and returns the total buffer
+    /// length which was used (written) by the device.
+    ///
+    /// Ref: linux virtio_ring.c virtqueue_get_buf_ctx
+    ///
+    /// # Safety
+    ///
+    /// The buffers in `inputs` and `outputs` must match the set of buffers originally added to the
+    /// queue by `add` when it returned the token being passed in here.
+    pub(crate) fn pop_used(&mut self, id: u16) -> VirtIoResult<u32> {
+        if !self.can_pop()? {
+            return Err(VirtIoError::NotReady);
+        }
         let used_ring = self.queue_page.as_mut_used_ring(Self::USED_RING_OFFSET);
         let desc = self
             .queue_page
@@ -112,7 +187,10 @@ impl<const SIZE: usize> VirtIoQueue<SIZE> {
         // make sure we find the header
         assert_ne!(header, self.last_seen_used.wrapping_sub(1));
         self.poped_used.insert(header);
+
         let mut now = used_ring.ring[header as usize % SIZE].id as usize;
+        // todo!(fix it)
+        let len = used_ring.ring[header as usize % SIZE].len;
         self.avail_desc_index.push_back(now as _);
         while (desc[now].flags & DescFlag::NEXT) != 0 {
             now = desc[now % SIZE].next as _;
@@ -123,12 +201,12 @@ impl<const SIZE: usize> VirtIoQueue<SIZE> {
             self.poped_used.remove(&self.last_seen_used);
             self.last_seen_used += 1;
         }
-        Ok(())
+        Ok(len)
     }
 }
 
 #[repr(C, align(16))]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub struct Descriptor {
     addr: u64,
     len: u32,

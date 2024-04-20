@@ -105,9 +105,13 @@ fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
 fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
     // let mut blk = VirtIOBlk::<HalImpl, T>::new(transport).expect("failed to create blk driver");
     let io_region = SafeIoRegion::new(vaddr, size);
+    //
+    type MyTransport = safe_virtio_drivers::transport::mmio::MmioTransport;
+    let transport = safe_virtio_drivers::transport::mmio::MmioTransport::new(Box::new(io_region))
+        .expect("failed to create transport");
 
     let mut blk =
-        safe_virtio_drivers::device::block::VirtIOBlk::<MyHalImpl>::new(Box::new(io_region))
+        safe_virtio_drivers::device::block::VirtIOBlk::<MyHalImpl, MyTransport>::new(transport)
             .expect("failed to create blk driver");
 
     let mut input = vec![0xffu8; 512];
