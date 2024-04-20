@@ -1,15 +1,16 @@
-use alloc::boxed::Box;
-use crate::{ PAGE_SIZE};
-use crate::error::{VirtIoError, VirtIoResult};
+use crate::error::{MmioError, VirtIoError, VirtIoResult};
 use crate::hal::VirtIoDeviceIo;
-use crate::transport::DeviceStatus;
+use crate::transport::{DeviceStatus, DeviceType, Transport};
 use crate::volatile::{ReadOnly, ReadVolatile, ReadWrite, WriteOnly, WriteVolatile};
+use crate::{PhysAddr, PAGE_SIZE};
+use alloc::boxed::Box;
 pub const MAGIC: u32 = 0x_7472_6976;
 pub const CONFIG_OFFSET: usize = 0x100;
 
 /// MMIO Device Register Interface, both legacy and modern.
 ///
 /// Ref: 4.2.2 MMIO Device Register Layout and 4.2.4 Legacy interface
+#[derive(Debug)]
 pub struct VirtIOHeader {
     /// Magic value
     magic: ReadOnly<0>,
@@ -148,7 +149,6 @@ pub struct VirtIOHeader {
     config_generation: ReadOnly<0xfc>,
 }
 
-
 impl Default for VirtIOHeader {
     fn default() -> Self {
         Self {
@@ -181,47 +181,189 @@ impl Default for VirtIOHeader {
         }
     }
 }
+pub(crate) const LEGACY_VERSION: u32 = 1;
+pub(crate) const MODERN_VERSION: u32 = 2;
+
+/// The version of the VirtIO MMIO transport supported by a device.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+#[repr(u32)]
+pub enum MmioVersion {
+    /// Legacy MMIO transport with page-based addressing.
+    Legacy = LEGACY_VERSION,
+    /// Modern MMIO transport.
+    Modern = MODERN_VERSION,
+}
+
+/// MMIO Device Register Interface.
+///
+/// Ref: 4.2.2 MMIO Device Register Layout and 4.2.4 Legacy interface
+#[derive(Debug)]
+pub struct MmioTransport {
+    header: VirtIOHeader,
+    version: MmioVersion,
+    io_region: Box<dyn VirtIoDeviceIo>,
+}
+
+impl MmioTransport {
+    pub fn new(io_region: Box<dyn VirtIoDeviceIo>) -> VirtIoResult<Self> {
+        let header = VirtIOHeader::default();
+        let magic = header.magic.read_volatile_u32(&io_region)?;
+        if magic != MAGIC {
+            return Err(VirtIoError::MmioError(MmioError::BadMagic(magic)));
+        }
+        let device_id = header.device_id.read_volatile_u32(&io_region)?;
+        if device_id == 0 {
+            return Err(VirtIoError::MmioError(MmioError::ZeroDeviceId));
+        }
+        let version = if header.is_legacy(&io_region)? {
+            MmioVersion::Legacy
+        } else {
+            MmioVersion::Modern
+        };
+        Ok(Self {
+            header,
+            version,
+            io_region,
+        })
+    }
+
+    /// Gets the version of the VirtIO MMIO transport.
+    pub fn version(&self) -> MmioVersion {
+        self.version
+    }
+
+    /// Gets the vendor ID.
+    pub fn vendor_id(&self) -> u32 {
+        // Safe because self.header points to a valid VirtIO MMIO region.
+        self.header
+            .vendor_id
+            .read_volatile_u32(&self.io_region)
+            .unwrap()
+    }
+}
+
+impl Transport for MmioTransport {
+    fn device_type(&self) -> VirtIoResult<DeviceType> {
+        let ty = self.header.device_id.read_volatile_u32(&self.io_region)?;
+        Ok(ty.into())
+    }
+
+    fn read_device_features(&mut self) -> VirtIoResult<u64> {
+        self.header
+            .device_features_sel
+            .write_volatile_u32(0, &self.io_region)?;
+        let mut device_features = self
+            .header
+            .device_features
+            .read_volatile_u32(&self.io_region)? as u64;
+        self.header
+            .device_features_sel
+            .write_volatile_u32(1, &self.io_region)?;
+        device_features |= (self
+            .header
+            .device_features
+            .read_volatile_u32(&self.io_region)? as u64)
+            << 32;
+        Ok(device_features)
+    }
+
+    fn write_driver_features(&mut self, driver_features: u64) -> VirtIoResult<()> {
+        todo!()
+    }
+
+    fn max_queue_size(&mut self, queue: u16) -> u32 {
+        todo!()
+    }
+
+    fn notify(&mut self, queue: u16) {
+        todo!()
+    }
+
+    fn get_status(&self) -> DeviceStatus {
+        todo!()
+    }
+
+    fn set_status(&mut self, status: DeviceStatus) {
+        todo!()
+    }
+
+    fn set_guest_page_size(&mut self, guest_page_size: u32) {
+        todo!()
+    }
+
+    fn requires_legacy_layout(&self) -> bool {
+        todo!()
+    }
+
+    fn queue_set(
+        &mut self,
+        queue: u16,
+        size: u32,
+        descriptors: PhysAddr,
+        driver_area: PhysAddr,
+        device_area: PhysAddr,
+    ) {
+        todo!()
+    }
+
+    fn queue_unset(&mut self, queue: u16) {
+        todo!()
+    }
+
+    fn queue_used(&mut self, queue: u16) -> bool {
+        todo!()
+    }
+
+    fn ack_interrupt(&mut self) -> bool {
+        todo!()
+    }
+}
 
 impl VirtIOHeader {
-
     pub(crate) fn is_legacy(&self, io_region: &Box<dyn VirtIoDeviceIo>) -> VirtIoResult<bool> {
         Ok(self.version.read_volatile_u32(io_region)? == 1)
     }
-    pub(crate) fn general_init(&self, io_region: &Box<dyn VirtIoDeviceIo>, driver_feat: u64) -> VirtIoResult<()> {
+    pub(crate) fn general_init(
+        &self,
+        io_region: &Box<dyn VirtIoDeviceIo>,
+        driver_feat: u64,
+    ) -> VirtIoResult<()> {
         if self.magic.read_volatile_u32(io_region)? != MAGIC {
-            return Err(VirtIoError::InvalidParam)
+            return Err(VirtIoError::InvalidParam);
         }
         let version = self.version.read_volatile_u32(io_region)?;
         if version != 1 && version != 2 {
-            return Err(VirtIoError::InvalidParam)
+            return Err(VirtIoError::InvalidParam);
         }
         if self.device_id.read_volatile_u32(io_region)? == 0 {
             return Err(VirtIoError::InvalidParam);
         }
         let mut stat = DeviceStatus::empty();
         // 1. write 0 in status
-        self.status.write_volatile_u32(stat.bits(),io_region )?;
+        self.status.write_volatile_u32(stat.bits(), io_region)?;
         // 2. status::acknowledge -> 1
         // 3. status::driver -> 1
         stat |= DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER;
-        self.status.write_volatile_u32( stat.bits(),io_region)?;
+        self.status.write_volatile_u32(stat.bits(), io_region)?;
         // 4. read features & cal features
         let device_feat = self.device_features.read_volatile_u32(io_region)?;
         let ack_feat = device_feat & driver_feat as u32;
 
         // 5. write features
-        self.driver_features.write_volatile_u32(ack_feat,io_region)?;
+        self.driver_features
+            .write_volatile_u32(ack_feat, io_region)?;
         // 6. status::feature_ok -> 1
         stat |= DeviceStatus::FEATURES_OK;
-        self.status.write_volatile_u32(stat.bits(),io_region)?;
+        self.status.write_volatile_u32(stat.bits(), io_region)?;
         // 7. re_read status::feature_ok == 1
         let status = self.status.read_volatile_u32(io_region)?;
         if stat.bits() != status {
-            return Err(VirtIoError::InvalidParam)
+            return Err(VirtIoError::InvalidParam);
         }
         // 8. device specific config ?????
         if version == 1 {
-            self.legacy_guest_page_size.write_volatile_u32(PAGE_SIZE as u32,io_region)?;
+            self.legacy_guest_page_size
+                .write_volatile_u32(PAGE_SIZE as u32, io_region)?;
         }
         Ok(())
     }
@@ -231,6 +373,6 @@ impl VirtIOHeader {
             | DeviceStatus::DRIVER
             | DeviceStatus::FEATURES_OK
             | DeviceStatus::DRIVER_OK;
-        self.status.write_volatile_u32( stat.bits(),io_region)
+        self.status.write_volatile_u32(stat.bits(), io_region)
     }
 }

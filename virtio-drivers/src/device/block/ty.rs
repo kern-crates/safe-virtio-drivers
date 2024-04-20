@@ -1,7 +1,7 @@
-use bitflags::bitflags;
 use crate::error::{VirtIoError, VirtIoResult};
-use crate::volatile::ReadWrite;
 use crate::transport::mmio::CONFIG_OFFSET;
+use crate::volatile::ReadWrite;
+use bitflags::bitflags;
 
 bitflags! {
     #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
@@ -76,12 +76,12 @@ pub enum BlkReqType {
 
 #[repr(C)]
 #[derive(Debug)]
-pub struct BlkReqHeader {
+pub struct BlkReq {
     type_: BlkReqType,
     reserved: u32,
     sector: u64,
 }
-impl BlkReqHeader {
+impl BlkReq {
     pub fn new(t: BlkReqType, sector: u64) -> Self {
         Self {
             type_: t,
@@ -92,7 +92,7 @@ impl BlkReqHeader {
 }
 
 #[repr(C)]
-#[derive(Debug,Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub struct BlkRespStatus(u8);
 
 impl BlkRespStatus {
@@ -106,7 +106,7 @@ impl BlkRespStatus {
     pub const NOT_READY: BlkRespStatus = BlkRespStatus(3);
 }
 
-impl Default for BlkRespStatus{
+impl Default for BlkRespStatus {
     fn default() -> Self {
         Self::NOT_READY
     }
@@ -124,9 +124,7 @@ impl From<BlkRespStatus> for VirtIoResult<()> {
     }
 }
 
-
-
-#[derive(Debug,Default)]
+#[derive(Debug, Default)]
 pub struct BlkConfig {
     pub(super) capacity_low: ReadWrite<CONFIG_OFFSET>,
     pub(super) capacity_high: ReadWrite<{ CONFIG_OFFSET + 0x4 }>,
@@ -144,4 +142,3 @@ pub struct BlkConfig {
     pub(super) opt_io_size: ReadWrite<{ CONFIG_OFFSET + 0x1c }>,
     // ...
 }
-

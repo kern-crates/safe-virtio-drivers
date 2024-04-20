@@ -27,10 +27,21 @@ pub enum VirtIoError {
     ConfigSpaceTooSmall,
     /// The device doesn't have any config space, but the driver expects some.
     ConfigSpaceMissing,
+    MmioError(MmioError),
     // Error from the socket device.
     // SocketDeviceError(device::socket::SocketError),
 }
 
+/// An error encountered initialising a VirtIO MMIO transport.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum MmioError {
+    /// The header doesn't start with the expected magic value 0x74726976.
+    BadMagic(u32),
+    /// The header reports a version number that is neither 1 (legacy) nor 2 (modern).
+    UnsupportedVersion(u32),
+    /// The header reports a device ID of 0.
+    ZeroDeviceId,
+}
 
 impl Display for VirtIoError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
@@ -56,16 +67,14 @@ impl Display for VirtIoError {
                     "The device doesn't have any config space, but the driver expects some"
                 )
             }
+            Self::MmioError(e) => write!(f, "Error from MMIO transport: {e:?}"),
             // Self::SocketDeviceError(e) => write!(f, "Error from the socket device: {e:?}"),
         }
     }
 }
-
-
 
 // impl From<device::socket::SocketError> for Error {
 //     fn from(e: device::socket::SocketError) -> Self {
 //         Self::SocketDeviceError(e)
 //     }
 // }
-

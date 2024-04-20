@@ -1,3 +1,4 @@
+use crate::DMA_PADDR;
 use core::{
     ptr::NonNull,
     sync::atomic::{AtomicUsize, Ordering},
@@ -5,7 +6,6 @@ use core::{
 use log::trace;
 use spin::Lazy;
 use virtio_drivers::{BufferDirection, Hal, PhysAddr, PAGE_SIZE};
-use crate::DMA_PADDR;
 
 pub struct HalImpl;
 

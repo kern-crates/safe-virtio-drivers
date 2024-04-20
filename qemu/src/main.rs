@@ -8,12 +8,15 @@ extern crate log;
 extern crate alloc;
 extern crate opensbi_rt;
 
+use crate::my_impl::{MyHalImpl, SafeIoRegion};
 use alloc::boxed::Box;
 use alloc::vec;
+use core::panic::PanicInfo;
 use core::ptr::NonNull;
 use core::sync::atomic::AtomicUsize;
 use fdt::{node::FdtNode, standard_nodes::Compatible, Fdt};
 use log::LevelFilter;
+use opensbi_rt::{print, println};
 use spin::Lazy;
 use virtio_drivers::{
     device::{blk::VirtIOBlk, gpu::VirtIOGpu, input::VirtIOInput},
@@ -23,18 +26,18 @@ use virtio_drivers::{
     },
 };
 use virtio_impl::HalImpl;
-use crate::my_impl::{MyHalImpl, SafeIoRegion};
 
 mod virtio_impl;
 
+mod my_impl;
 #[cfg(feature = "tcp")]
 mod tcp;
-mod my_impl;
+
 extern "C" {
     fn end();
 }
 
-static DMA_PADDR:Lazy<AtomicUsize>  = Lazy::new(|| AtomicUsize::new(end as usize));
+static DMA_PADDR: Lazy<AtomicUsize> = Lazy::new(|| AtomicUsize::new(end as usize));
 
 const NET_QUEUE_SIZE: usize = 16;
 
@@ -83,15 +86,15 @@ fn virtio_probe(node: FdtNode) {
                     transport.device_type(),
                     transport.version(),
                 );
-                virtio_device(transport, vaddr,size);
+                virtio_device(transport, vaddr, size);
             }
         }
     }
 }
 
-fn virtio_device(transport: impl Transport, vaddr:usize, size:usize) {
+fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
     match transport.device_type() {
-        DeviceType::Block => virtio_blk(transport,vaddr,size),
+        DeviceType::Block => virtio_blk(transport, vaddr, size),
         // DeviceType::GPU => virtio_gpu(transport),
         // DeviceType::Input => virtio_input(transport),
         // DeviceType::Network => virtio_net(transport),
@@ -99,16 +102,18 @@ fn virtio_device(transport: impl Transport, vaddr:usize, size:usize) {
     }
 }
 
-fn virtio_blk<T: Transport>(transport: T,vaddr:usize, size:usize) {
+fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
     // let mut blk = VirtIOBlk::<HalImpl, T>::new(transport).expect("failed to create blk driver");
-    let io_region = SafeIoRegion::new(vaddr,size);
+    let io_region = SafeIoRegion::new(vaddr, size);
 
-    let mut blk = safe_virtio_drivers::device::block::VirtIOBlk::<MyHalImpl>::new(Box::new(io_region))
-        .expect("failed to create blk driver");
+    let mut blk =
+        safe_virtio_drivers::device::block::VirtIOBlk::<MyHalImpl>::new(Box::new(io_region))
+            .expect("failed to create blk driver");
 
     let mut input = vec![0xffu8; 512];
     let mut output = vec![0; 512];
-    for i in 0..32 {
+    let iter = 10 * 1024 * 1024 / 512;
+    for i in 0..iter {
         for x in input.iter_mut() {
             *x = i as u8;
         }
@@ -116,6 +121,7 @@ fn virtio_blk<T: Transport>(transport: T,vaddr:usize, size:usize) {
         blk.read_blocks(i, &mut output).expect("failed to read");
         assert_eq!(input, output);
     }
+    blk.flush().expect("failed to flush");
     info!("virtio-blk test finished");
 }
 
