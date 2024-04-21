@@ -7,4 +7,4 @@ edition = "2021"
 
 [dependencies]
 log = "0"
-bitflags = "2.5"
+bitflags = "2.5" # safe crate

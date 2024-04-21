@@ -1,5 +1,5 @@
 use crate::error::{VirtIoError, VirtIoResult};
-use crate::hal::{Hal, QueuePage};
+use crate::hal::{DevicePage, Hal, QueuePage};
 use crate::transport::Transport;
 use crate::{align_up, pages};
 use alloc::boxed::Box;

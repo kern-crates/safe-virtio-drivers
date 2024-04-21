@@ -44,6 +44,7 @@ header:
 clean:
 	cargo clean
 
+
 qemu-legacy: kernel $(img)
 # Wait a few seconds, then try to open a connection to the VM so it can test its networking.
 	#( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
@@ -53,10 +54,9 @@ qemu-legacy: kernel $(img)
 		-serial mon:stdio \
 		-bios default \
 		-kernel $(kernel) \
-		-nographic \
 		-drive file=$(img),if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0 \
-#		-device virtio-gpu-device \
+		-device virtio-gpu-device \
 #		-device virtio-mouse-device \
 #		-device virtio-net-device,netdev=net0 \
 #		-netdev user,id=net0,hostfwd=tcp::5555-:5555

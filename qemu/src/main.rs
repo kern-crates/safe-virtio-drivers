@@ -95,20 +95,19 @@ fn virtio_probe(node: FdtNode) {
 fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
     match transport.device_type() {
         DeviceType::Block => virtio_blk(transport, vaddr, size),
-        // DeviceType::GPU => virtio_gpu(transport),
+        DeviceType::GPU => virtio_gpu(transport, vaddr, size),
         // DeviceType::Input => virtio_input(transport),
         // DeviceType::Network => virtio_net(transport),
         t => warn!("Unrecognized virtio device: {:?}", t),
     }
 }
-
+type MyTransport = safe_virtio_drivers::transport::mmio::MmioTransport;
 fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
     // let mut blk = VirtIOBlk::<HalImpl, T>::new(transport).expect("failed to create blk driver");
     let io_region = SafeIoRegion::new(vaddr, size);
     //
-    type MyTransport = safe_virtio_drivers::transport::mmio::MmioTransport;
-    let transport = safe_virtio_drivers::transport::mmio::MmioTransport::new(Box::new(io_region))
-        .expect("failed to create transport");
+
+    let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
 
     let mut blk =
         safe_virtio_drivers::device::block::VirtIOBlk::<MyHalImpl, MyTransport>::new(transport)
@@ -129,8 +128,13 @@ fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
     info!("virtio-blk test finished");
 }
 
-fn virtio_gpu<T: Transport>(transport: T) {
-    let mut gpu = VirtIOGpu::<HalImpl, T>::new(transport).expect("failed to create gpu driver");
+fn virtio_gpu<T: Transport>(transport: T, vaddr: usize, size: usize) {
+    // let mut gpu = VirtIOGpu::<HalImpl, T>::new(transport).expect("failed to create gpu driver");
+    let io_region = SafeIoRegion::new(vaddr, size);
+    let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
+    let mut gpu =
+        safe_virtio_drivers::device::gpu::VirtIOGpu::<MyHalImpl, MyTransport>::new(transport)
+            .expect("failed to create gpu driver");
     let (width, height) = gpu.resolution().expect("failed to get resolution");
     let width = width as usize;
     let height = height as usize;
@@ -154,7 +158,6 @@ fn virtio_gpu<T: Transport>(transport: T) {
             }
         }
     }
-
     info!("virtio-gpu test finished");
 }
 

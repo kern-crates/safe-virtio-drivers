@@ -19,19 +19,25 @@ impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
     }
 }
 
-pub trait QueuePage<const SIZE: usize>: Send + Sync {
+pub trait DevicePage: Send + Sync {
+    fn as_mut_slice(&mut self) -> &mut [u8];
+    fn as_slice(&self) -> &[u8];
+    fn paddr(&self) -> VirtAddr;
+    fn vaddr(&self) -> PhysAddr;
+}
+
+pub trait QueuePage<const SIZE: usize>: DevicePage {
     fn as_descriptor_table_at<'a>(&self, offset: usize) -> &'a [Descriptor];
     fn as_mut_descriptor_table_at<'a>(&mut self, offset: usize) -> &'a mut [Descriptor];
     fn as_avail_ring_at<'a>(&self, offset: usize) -> &'a AvailRing<SIZE>;
     fn as_mut_avail_ring<'a>(&mut self, offset: usize) -> &'a mut AvailRing<SIZE>;
     fn as_used_ring<'a>(&self, offset: usize) -> &'a UsedRing<SIZE>;
     fn as_mut_used_ring<'a>(&mut self, offset: usize) -> &'a mut UsedRing<SIZE>;
-    fn vaddr(&self) -> PhysAddr;
-    fn paddr(&self) -> VirtAddr;
 }
 
 pub trait Hal<const SIZE: usize>: Send + Sync {
     fn dma_alloc(pages: usize) -> Box<dyn QueuePage<SIZE>>;
+    fn dma_alloc_buf(pages: usize) -> Box<dyn DevicePage>;
 }
 
 /// The direction in which a buffer is passed.
