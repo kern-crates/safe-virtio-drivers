@@ -197,6 +197,29 @@ pub enum MmioVersion {
     Modern = MODERN_VERSION,
 }
 
+impl TryFrom<u32> for MmioVersion {
+    type Error = VirtIoError;
+
+    fn try_from(version: u32) -> Result<Self, Self::Error> {
+        match version {
+            LEGACY_VERSION => Ok(Self::Legacy),
+            MODERN_VERSION => Ok(Self::Modern),
+            _ => Err(VirtIoError::MmioError(MmioError::UnsupportedVersion(
+                version,
+            ))),
+        }
+    }
+}
+
+impl From<MmioVersion> for u32 {
+    fn from(version: MmioVersion) -> Self {
+        match version {
+            MmioVersion::Legacy => LEGACY_VERSION,
+            MmioVersion::Modern => MODERN_VERSION,
+        }
+    }
+}
+
 /// MMIO Device Register Interface.
 ///
 /// Ref: 4.2.2 MMIO Device Register Layout and 4.2.4 Legacy interface
@@ -218,11 +241,8 @@ impl MmioTransport {
         if device_id == 0 {
             return Err(VirtIoError::MmioError(MmioError::ZeroDeviceId));
         }
-        let version = if header.is_legacy(&io_region)? {
-            MmioVersion::Legacy
-        } else {
-            MmioVersion::Modern
-        };
+
+        let version = header.version.read_u32(&io_region)?.try_into()?;
         Ok(Self {
             header,
             version,
@@ -436,62 +456,5 @@ impl Drop for MmioTransport {
         // Reset the device when the transport is dropped.
         self.set_status(DeviceStatus::empty())
             .expect("failed to reset device")
-    }
-}
-
-impl VirtIOHeader {
-    pub(crate) fn is_legacy(&self, io_region: &Box<dyn VirtIoDeviceIo>) -> VirtIoResult<bool> {
-        Ok(self.version.read_u32(io_region)? == 1)
-    }
-    pub(crate) fn general_init(
-        &self,
-        io_region: &Box<dyn VirtIoDeviceIo>,
-        driver_feat: u64,
-    ) -> VirtIoResult<()> {
-        if self.magic.read_u32(io_region)? != MAGIC {
-            return Err(VirtIoError::InvalidParam);
-        }
-        let version = self.version.read_u32(io_region)?;
-        if version != 1 && version != 2 {
-            return Err(VirtIoError::InvalidParam);
-        }
-        if self.device_id.read_u32(io_region)? == 0 {
-            return Err(VirtIoError::InvalidParam);
-        }
-        let mut stat = DeviceStatus::empty();
-        // 1. write 0 in status
-        self.status.write_u32(stat.bits(), io_region)?;
-        // 2. status::acknowledge -> 1
-        // 3. status::driver -> 1
-        stat |= DeviceStatus::ACKNOWLEDGE | DeviceStatus::DRIVER;
-        self.status.write_u32(stat.bits(), io_region)?;
-        // 4. read features & cal features
-        let device_feat = self.device_features.read_u32(io_region)?;
-        let ack_feat = device_feat & driver_feat as u32;
-
-        // 5. write features
-        self.driver_features.write_u32(ack_feat, io_region)?;
-        // 6. status::feature_ok -> 1
-        stat |= DeviceStatus::FEATURES_OK;
-        self.status.write_u32(stat.bits(), io_region)?;
-        // 7. re_read status::feature_ok == 1
-        let status = self.status.read_u32(io_region)?;
-        if stat.bits() != status {
-            return Err(VirtIoError::InvalidParam);
-        }
-        // 8. device specific config ?????
-        if version == 1 {
-            self.legacy_guest_page_size
-                .write_u32(PAGE_SIZE as u32, io_region)?;
-        }
-        Ok(())
-    }
-    pub(crate) fn general_init_end(&self, io_region: &Box<dyn VirtIoDeviceIo>) -> VirtIoResult<()> {
-        // 9. status::driver_ok -> 1
-        let stat = DeviceStatus::ACKNOWLEDGE
-            | DeviceStatus::DRIVER
-            | DeviceStatus::FEATURES_OK
-            | DeviceStatus::DRIVER_OK;
-        self.status.write_u32(stat.bits(), io_region)
     }
 }
