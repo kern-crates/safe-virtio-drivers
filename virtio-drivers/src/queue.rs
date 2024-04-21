@@ -86,7 +86,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             transport.notify(self.queue_idx)?;
         }
         // Wait until there is at least one element in the used ring.
-        while !self.can_pop()? {
+        while !self.can_pop(token)? {
             spin_loop();
         }
         self.pop_used(token)
@@ -148,11 +148,28 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         Ok(head)
     }
 
-    pub(crate) fn can_pop(&self) -> VirtIoResult<bool> {
+    pub(crate) fn can_pop(&self, id: u16) -> VirtIoResult<bool> {
         fence(Ordering::SeqCst);
         let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
-        if self.last_seen_used != used_ring.idx {
-            return Ok(true);
+        if self.last_seen_used == used_ring.idx {
+            return Ok(false);
+        }
+        // ---------------------------------------
+        // let skip = used_ring.idx.wrapping_sub(self.last_seen_used);
+        // let mut current_index = self.last_seen_used;
+        // for _ in 0..skip {
+        //     if used_ring.ring[current_index as usize % SIZE].id == id as u32 {
+        //         return Ok(true);
+        //     }
+        //     current_index = current_index.wrapping_add(1);
+        // }
+        //-------------------------------------------
+        let mut current_index = self.last_seen_used;
+        while current_index != used_ring.idx {
+            if used_ring.ring[current_index as usize % SIZE].id == id as u32 {
+                return Ok(true);
+            }
+            current_index = current_index.wrapping_add(1);
         }
         Ok(false)
     }
@@ -166,7 +183,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     /// The buffers in `inputs` and `outputs` must match the set of buffers originally added to the
     /// queue by `add` when it returned the token being passed in here.
     pub(crate) fn pop_used(&mut self, id: u16) -> VirtIoResult<u32> {
-        if !self.can_pop()? {
+        if !self.can_pop(id)? {
             return Err(VirtIoError::NotReady);
         }
         let used_ring = self.queue_page.as_mut_used_ring(Self::USED_RING_OFFSET);
