@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 use safe_virtio_drivers::error::VirtIoResult;
-use safe_virtio_drivers::hal::{QueuePage, VirtIoDeviceIo};
+use safe_virtio_drivers::hal::{DevicePage, QueuePage, VirtIoDeviceIo};
 use safe_virtio_drivers::queue::{AvailRing, Descriptor, UsedRing};
 use safe_virtio_drivers::{PhysAddr, VirtAddr, PAGE_SIZE};
 
@@ -11,6 +11,13 @@ pub struct MyHalImpl;
 
 pub struct Page {
     pa: usize,
+    size: usize,
+}
+
+impl Page {
+    pub fn new(pa: usize, size: usize) -> Self {
+        Page { pa, size }
+    }
 }
 
 #[derive(Debug)]
@@ -44,8 +51,35 @@ impl VirtIoDeviceIo for SafeIoRegion {
 impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {
     fn dma_alloc(pages: usize) -> Box<dyn QueuePage<SIZE>> {
         let paddr = DMA_PADDR.fetch_add(PAGE_SIZE * pages, Ordering::SeqCst);
-        info!("alloc DMA: paddr={:#x}, pages={}", paddr, pages);
-        Box::new(Page { pa: paddr })
+        info!("<dma_alloc>alloc DMA: paddr={:#x}, pages={}", paddr, pages);
+        Box::new(Page::new(paddr, PAGE_SIZE * pages))
+    }
+
+    fn dma_alloc_buf(pages: usize) -> Box<dyn DevicePage> {
+        let paddr = DMA_PADDR.fetch_add(PAGE_SIZE * pages, Ordering::SeqCst);
+        info!(
+            "<dma_alloc_buf> alloc DMA: paddr={:#x}, pages={}",
+            paddr, pages
+        );
+        Box::new(Page::new(paddr, PAGE_SIZE * pages))
+    }
+}
+
+impl DevicePage for Page {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.pa as *mut u8, self.size) }
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.pa as *const u8, self.size) }
+    }
+
+    fn paddr(&self) -> VirtAddr {
+        self.pa as VirtAddr
+    }
+
+    fn vaddr(&self) -> PhysAddr {
+        self.pa
     }
 }
 
@@ -90,13 +124,5 @@ impl<const SIZE: usize> QueuePage<SIZE> for Page {
             let ptr = (self.pa + offset) as *mut UsedRing<SIZE>;
             &mut *ptr
         }
-    }
-
-    fn vaddr(&self) -> PhysAddr {
-        self.pa
-    }
-
-    fn paddr(&self) -> VirtAddr {
-        self.pa as VirtAddr
     }
 }
