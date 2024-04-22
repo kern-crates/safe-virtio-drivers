@@ -42,8 +42,8 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOGpu<H, T> {
         let io_region = transport.io_region();
         // read config
         let config = GpuConfig::default();
-        let events_read = config.events_read.read_u32(io_region)?;
-        let num_scanouts = config.num_scanouts.read_u32(io_region)?;
+        let events_read = config.events_read.read(io_region)?;
+        let num_scanouts = config.num_scanouts.read(io_region)?;
         info!(
             "events_read: {:#x}, num_scanouts: {:#x}",
             events_read, num_scanouts

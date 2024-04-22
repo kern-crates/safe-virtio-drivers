@@ -6,16 +6,23 @@ use core::fmt::Debug;
 
 pub trait VirtIoDeviceIo: Send + Sync + Debug {
     fn read_volatile_u32_at(&self, off: usize) -> VirtIoResult<u32>;
+    fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8>;
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()>;
+    fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()>;
 }
 
 impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
     fn read_volatile_u32_at(&self, off: usize) -> VirtIoResult<u32> {
         self.as_ref().read_volatile_u32_at(off)
     }
-
+    fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8> {
+        self.as_ref().read_volatile_u8_at(off)
+    }
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()> {
         self.as_ref().write_volatile_u32_at(off, data)
+    }
+    fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()> {
+        self.as_ref().write_volatile_u8_at(off, data)
     }
 }
 

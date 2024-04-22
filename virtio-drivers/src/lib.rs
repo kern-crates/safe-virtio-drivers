@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 // #![allow(unused)]
 extern crate alloc;
+mod common;
 pub mod device;
 pub mod error;
 pub mod hal;

@@ -126,19 +126,19 @@ impl From<BlkRespStatus> for VirtIoResult<()> {
 
 #[derive(Debug, Default)]
 pub struct BlkConfig {
-    pub(super) capacity_low: ReadWrite<CONFIG_OFFSET>,
-    pub(super) capacity_high: ReadWrite<{ CONFIG_OFFSET + 0x4 }>,
-    pub(super) size_max: ReadWrite<{ CONFIG_OFFSET + 0x8 }>,
-    pub(super) seg_max: ReadWrite<{ CONFIG_OFFSET + 0xc }>,
+    pub(super) capacity_low: ReadWrite<CONFIG_OFFSET, u32>,
+    pub(super) capacity_high: ReadWrite<{ CONFIG_OFFSET + 0x4 }, u32>,
+    pub(super) size_max: ReadWrite<{ CONFIG_OFFSET + 0x8 }, u32>,
+    pub(super) seg_max: ReadWrite<{ CONFIG_OFFSET + 0xc }, u32>,
     // cylinders: ReadWrite<{ CONFIG_OFFSET +  }>,
     // heads: ReadWrite<u8>,
     // sectors: ReadWrite<u8>,
-    pub(super) geometry: ReadWrite<{ CONFIG_OFFSET + 0x10 }>,
-    pub(super) blk_size: ReadWrite<{ CONFIG_OFFSET + 0x14 }>,
+    pub(super) geometry: ReadWrite<{ CONFIG_OFFSET + 0x10 }, u32>,
+    pub(super) blk_size: ReadWrite<{ CONFIG_OFFSET + 0x14 }, u32>,
     // physical_block_exp: ReadWrite<u8>,
     // alignment_offset: ReadWrite<u8>,
     // min_io_size: ReadWrite<u16>,
-    pub(super) topology: ReadWrite<{ CONFIG_OFFSET + 0x18 }>,
-    pub(super) opt_io_size: ReadWrite<{ CONFIG_OFFSET + 0x1c }>,
+    pub(super) topology: ReadWrite<{ CONFIG_OFFSET + 0x18 }, u32>,
+    pub(super) opt_io_size: ReadWrite<{ CONFIG_OFFSET + 0x1c }, u32>,
     // ...
 }

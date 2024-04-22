@@ -32,8 +32,8 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOBlk<H, T> {
         let io_region = transport.io_region();
         // read config
         let config = BlkConfig::default();
-        let capacity = ((config.capacity_high.read_u32(io_region)? as u64) << 32)
-            | (config.capacity_low.read_u32(io_region)? as u64);
+        let capacity = ((config.capacity_high.read(io_region)? as u64) << 32)
+            | (config.capacity_low.read(io_region)? as u64);
         info!("block device size: {}KB", capacity / 2);
         let queue = VirtIoQueue::new(&mut transport, 0)?;
         transport.finish_init()?;

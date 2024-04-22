@@ -6,16 +6,16 @@ use bitflags::bitflags;
 #[derive(Debug, Default)]
 pub struct GpuConfig {
     /// Signals pending events to the driver。
-    pub(crate) events_read: ReadOnly<CONFIG_OFFSET>,
+    pub(crate) events_read: ReadOnly<CONFIG_OFFSET, u32>,
 
     /// Clears pending events in the device.
-    pub(crate) events_clear: WriteOnly<{ CONFIG_OFFSET + 4 }>,
+    pub(crate) events_clear: WriteOnly<{ CONFIG_OFFSET + 4 }, u32>,
 
     /// Specifies the maximum number of scanouts supported by the device.
     ///
     /// Minimum value is 1, maximum value is 16.
-    pub(crate) num_scanouts: ReadWrite<{ CONFIG_OFFSET + 8 }>,
-    pub(crate) num_capsets: ReadWrite<{ CONFIG_OFFSET + 12 }>,
+    pub(crate) num_scanouts: ReadWrite<{ CONFIG_OFFSET + 8 }, u32>,
+    pub(crate) num_capsets: ReadWrite<{ CONFIG_OFFSET + 12 }, u32>,
 }
 
 /// Display configuration has changed.

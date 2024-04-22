@@ -1,45 +1,105 @@
+use core::marker::PhantomData;
+
+use crate::common::Array;
 use crate::error::VirtIoResult;
 use crate::hal::VirtIoDeviceIo;
 
 #[derive(Debug, Default)]
-pub struct ReadOnly<const OFFSET: usize>;
+pub struct ReadOnly<const OFFSET: usize, T: Copy> {
+    _marker: PhantomData<T>,
+}
 #[derive(Debug, Default)]
-pub struct WriteOnly<const OFFSET: usize>;
+pub struct WriteOnly<const OFFSET: usize, T: Copy> {
+    _marker: PhantomData<T>,
+}
 #[derive(Debug, Default)]
-pub struct ReadWrite<const OFFSET: usize>;
+pub struct ReadWrite<const OFFSET: usize, T: Copy> {
+    _marker: PhantomData<T>,
+}
 
 pub trait ReadVolatile {
-    fn read_u32(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<u32>;
+    type T;
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T>;
 }
 
 pub trait WriteVolatile {
-    fn write_u32(&self, data: u32, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()>;
+    type T;
+    fn write(&self, data: Self::T, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()>;
 }
 
-impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET> {
+// TODO: use macro to simpify code
+impl<const OFFSET: usize, const SIZE: usize> ReadVolatile for ReadOnly<OFFSET, Array<SIZE, u8>> {
+    type T = [u8; SIZE];
     #[inline]
-    fn read_u32(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<u32> {
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
+        let mut res = [0; SIZE];
+        for i in 0..SIZE {
+            res[i] = io_region.read_volatile_u8_at(OFFSET + i)?;
+        }
+        Ok(res)
+    }
+}
+impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET, u32> {
+    type T = u32;
+    #[inline]
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
         io_region.read_volatile_u32_at(OFFSET)
     }
 }
-
-impl<const OFFSET: usize> WriteVolatile for WriteOnly<OFFSET> {
+impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET, u8> {
+    type T = u8;
     #[inline]
-    fn write_u32(&self, data: u32, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
+        io_region.read_volatile_u8_at(OFFSET)
+    }
+}
+impl<const OFFSET: usize> WriteVolatile for WriteOnly<OFFSET, u64> {
+    type T = u64;
+    #[inline]
+    fn write(&self, data: u64, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
+        io_region.write_volatile_u32_at(OFFSET, data as u32)?;
+        io_region.write_volatile_u32_at(OFFSET + 0x4, (data >> 32) as u32)
+    }
+}
+impl<const OFFSET: usize> WriteVolatile for WriteOnly<OFFSET, u32> {
+    type T = u32;
+    #[inline]
+    fn write(&self, data: u32, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
         io_region.write_volatile_u32_at(OFFSET, data)
     }
 }
-
-impl<const OFFSET: usize> ReadVolatile for ReadWrite<OFFSET> {
+impl<const OFFSET: usize> WriteVolatile for WriteOnly<OFFSET, u8> {
+    type T = u8;
     #[inline]
-    fn read_u32(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<u32> {
+    fn write(&self, data: u8, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
+        io_region.write_volatile_u8_at(OFFSET, data)
+    }
+}
+impl<const OFFSET: usize> ReadVolatile for ReadWrite<OFFSET, u32> {
+    type T = u32;
+    #[inline]
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
         io_region.read_volatile_u32_at(OFFSET)
     }
 }
-
-impl<const OFFSET: usize> WriteVolatile for ReadWrite<OFFSET> {
+impl<const OFFSET: usize> ReadVolatile for ReadWrite<OFFSET, u8> {
+    type T = u8;
     #[inline]
-    fn write_u32(&self, data: u32, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
+        io_region.read_volatile_u8_at(OFFSET)
+    }
+}
+impl<const OFFSET: usize> WriteVolatile for ReadWrite<OFFSET, u32> {
+    type T = u32;
+    #[inline]
+    fn write(&self, data: u32, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
         io_region.write_volatile_u32_at(OFFSET, data)
+    }
+}
+impl<const OFFSET: usize> WriteVolatile for ReadWrite<OFFSET, u8> {
+    type T = u8;
+    #[inline]
+    fn write(&self, data: u8, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<()> {
+        io_region.write_volatile_u8_at(OFFSET, data)
     }
 }

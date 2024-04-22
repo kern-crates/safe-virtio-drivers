@@ -2,16 +2,17 @@ use crate::error::VirtIoResult;
 use crate::hal::Hal;
 use crate::queue::{DescFlag, Descriptor, VirtIoQueue};
 use crate::transport::Transport;
+use crate::volatile::{ReadVolatile, WriteVolatile};
 use alloc::boxed::Box;
-
-const QUEUE_EVENT: u16 = 0;
-const QUEUE_STATUS: u16 = 1;
-const SUPPORTED_FEATURES: Feature = Feature::RING_EVENT_IDX;
-// a parameter that can change
-const QUEUE_SIZE: usize = 32;
 
 mod ty;
 use ty::*;
+
+const QUEUE_EVENT: u16 = 0;
+const QUEUE_STATUS: u16 = 1;
+const SUPPORTED_FEATURES: InputFeature = InputFeature::RING_EVENT_IDX;
+// a parameter that can change
+const QUEUE_SIZE: usize = 32;
 
 /// Virtual human interface devices such as keyboards, mice and tablets.
 ///
@@ -33,12 +34,13 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
         let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
 
         let config = InputConfig::default();
-
+        let io_region = transport.io_region();
         let mut event_queue = VirtIoQueue::new(&mut transport, QUEUE_EVENT)?;
         let status_queue = VirtIoQueue::new(&mut transport, QUEUE_STATUS)?;
         for (i, event) in event_buf.as_mut().iter_mut().enumerate() {
             // Safe because the buffer lasts as long as the queue.
             let token = unsafe { event_queue.add(&[], &mut [event.as_bytes_mut()])? };
+            let token = event_queue.add(Vec::new())?;
             assert_eq!(token, i as u16);
         }
         if event_queue.should_notify() {
@@ -72,6 +74,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
                     .ok()?;
             }
             let event_saved = *event;
+
             // requeue
             // Safe because buffer lasts as long as the queue.
             if let Ok(new_token) = unsafe { self.event_queue.add(&[], &mut [event.as_bytes_mut()]) }
@@ -96,19 +99,23 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
         select: InputConfigSelect,
         subsel: u8,
         out: &mut [u8],
-    ) -> u8 {
-        let size;
-        let data;
+    ) -> VirtIoResult<u8> {
         // Safe because config points to a valid MMIO region for the config space.
 
-        unsafe {
-            volwrite!(self.config, select, select as u8);
-            volwrite!(self.config, subsel, subsel);
-            size = volread!(self.config, size);
-            data = volread!(self.config, data);
-        }
+        // unsafe {
+        //     volwrite!(self.config, select, select as u8);
+        //     volwrite!(self.config, subsel, subsel);
+        //     size = volread!(self.config, size);
+        //     data = volread!(self.config, data);
+        // }
+        let config = InputConfig::default();
+        let io_region = self.transport.io_region();
+        config.select.write(select as _, io_region)?;
+        config.subsel.write(subsel, io_region)?;
+        let size = config.size.read(io_region)?;
+        let data = config.data.read(io_region)?;
         out[..size as usize].copy_from_slice(&data[..size as usize]);
-        size
+        Ok(size)
     }
 }
 
