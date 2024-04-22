@@ -121,7 +121,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     ///
     /// The input and output buffers must remain valid and not be accessed until a call to
     /// `pop_used` with the returned token succeeds.
-    fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
+    pub(crate) fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
         assert_ne!(data.len(), 0);
         if self.avail_desc_index.len() < data.len() {
             return Err(VirtIoError::QueueFull);
@@ -172,6 +172,15 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             current_index = current_index.wrapping_add(1);
         }
         Ok(false)
+    }
+    pub(crate) fn peek_used(&mut self) -> VirtIoResult<Option<u16>> {
+        fence(Ordering::SeqCst);
+        let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
+        if self.last_seen_used == used_ring.idx {
+            return Ok(None);
+        }
+        let id = used_ring.ring[self.last_seen_used as usize].id;
+        Ok(Some(id as _))
     }
     /// If the given token is next on the device used queue, pops it and returns the total buffer
     /// length which was used (written) by the device.

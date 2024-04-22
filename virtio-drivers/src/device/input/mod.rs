@@ -1,9 +1,11 @@
+use core::mem::size_of;
+
 use crate::error::VirtIoResult;
 use crate::hal::Hal;
 use crate::queue::{DescFlag, Descriptor, VirtIoQueue};
 use crate::transport::Transport;
 use crate::volatile::{ReadVolatile, WriteVolatile};
-use alloc::boxed::Box;
+use alloc::{boxed::Box, vec};
 
 mod ty;
 use ty::*;
@@ -23,31 +25,31 @@ pub struct VirtIOInput<H: Hal<QUEUE_SIZE>, T: Transport> {
     transport: T,
     event_queue: VirtIoQueue<H, QUEUE_SIZE>,
     status_queue: VirtIoQueue<H, QUEUE_SIZE>,
-    event_buf: Box<[InputEvent; 32]>,
+    event_buf: Box<[InputEvent; QUEUE_SIZE]>,
 }
 
 impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
     /// Create a new VirtIO-Input driver.
     pub fn new(mut transport: T) -> VirtIoResult<Self> {
-        let mut event_buf = Box::new([InputEvent::default(); QUEUE_SIZE]);
+        let event_buf = Box::new([InputEvent::default(); QUEUE_SIZE]);
 
-        let negotiated_features = transport.begin_init(SUPPORTED_FEATURES);
-
-        let config = InputConfig::default();
-        let io_region = transport.io_region();
         let mut event_queue = VirtIoQueue::new(&mut transport, QUEUE_EVENT)?;
         let status_queue = VirtIoQueue::new(&mut transport, QUEUE_STATUS)?;
-        for (i, event) in event_buf.as_mut().iter_mut().enumerate() {
+        for (i, event) in event_buf.iter().enumerate() {
             // Safe because the buffer lasts as long as the queue.
-            let token = unsafe { event_queue.add(&[], &mut [event.as_bytes_mut()])? };
-            let token = event_queue.add(Vec::new())?;
-            assert_eq!(token, i as u16);
+            // let token = unsafe { event_queue.add(&[], &mut [event.as_bytes_mut()])? };
+            let token = event_queue.add(vec![Descriptor::new(
+                event as *const InputEvent as _,
+                size_of::<InputEvent>() as _,
+                DescFlag::WRITE,
+            )])?;
+            assert_eq!(token, i as _);
         }
         if event_queue.should_notify() {
-            transport.notify(QUEUE_EVENT);
+            transport.notify(QUEUE_EVENT)?;
         }
 
-        transport.finish_init();
+        transport.finish_init()?;
 
         Ok(VirtIOInput {
             transport,
@@ -63,33 +65,45 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
     }
 
     /// Pop the pending event.
-    pub fn pop_pending_event(&mut self) -> Option<InputEvent> {
-        if let Some(token) = self.event_queue.peek_used() {
-            let event = &mut self.event_buf[token as usize];
+    pub fn pop_pending_event(&mut self) -> VirtIoResult<Option<InputEvent>> {
+        if let Some(token) = self.event_queue.peek_used()? {
+            // let event = &mut self.event_buf[token as usize];
             // Safe because we are passing the same buffer as we passed to `VirtQueue::add` and it
             // is still valid.
-            unsafe {
-                self.event_queue
-                    .pop_used(token, &[], &mut [event.as_bytes_mut()])
-                    .ok()?;
-            }
-            let event_saved = *event;
+            // unsafe {
+            //     self.event_queue
+            //         .pop_used(token, &[], &mut [event.as_bytes_mut()])
+            //         .ok()?;
+            // }
+            let _ = self.event_queue.pop_used(token)?;
+            let event_saved = self.event_buf[token as usize];
 
             // requeue
             // Safe because buffer lasts as long as the queue.
-            if let Ok(new_token) = unsafe { self.event_queue.add(&[], &mut [event.as_bytes_mut()]) }
-            {
-                // This only works because nothing happen between `pop_used` and `add` that affects
-                // the list of free descriptors in the queue, so `add` reuses the descriptor which
-                // was just freed by `pop_used`.
-                assert_eq!(new_token, token);
-                if self.event_queue.should_notify() {
-                    self.transport.notify(QUEUE_EVENT);
-                }
-                return Some(event_saved);
+            let new_token = self.event_queue.add(vec![Descriptor::new(
+                &self.event_buf[token as usize] as *const InputEvent as _,
+                size_of::<InputEvent>() as _,
+                DescFlag::WRITE,
+            )])?;
+            assert_eq!(new_token, token);
+            if self.event_queue.should_notify() {
+                self.transport.notify(QUEUE_EVENT)?;
             }
+            Ok(Some(event_saved))
+            // if let Ok(new_token) = unsafe { self.event_queue.add(&[], &mut [event.as_bytes_mut()]) }
+            // {
+            //     // This only works because nothing happen between `pop_used` and `add` that affects
+            //     // the list of free descriptors in the queue, so `add` reuses the descriptor which
+            //     // was just freed by `pop_used`.
+            //     assert_eq!(new_token, token);
+            //     if self.event_queue.should_notify() {
+            //         self.transport.notify(QUEUE_EVENT);
+            //     }
+            //     return Ok(Some(event_saved));
+            // }
+        } else {
+            Ok(None)
         }
-        None
     }
 
     /// Query a specific piece of information by `select` and `subsel`, and write
