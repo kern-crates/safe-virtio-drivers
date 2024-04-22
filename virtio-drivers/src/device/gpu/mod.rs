@@ -173,7 +173,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOGpu<H, T> {
         let req = Descriptor::new(
             &req as *const _ as _,
             size_of_val(&req) as _,
-            DescFlag::NEXT,
+            DescFlag::EMPTY,
         );
         self.cursor_queue
             .add_notify_wait_pop(&mut self.transport, vec![req])?;

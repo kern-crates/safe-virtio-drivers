@@ -18,6 +18,7 @@ use fdt::{node::FdtNode, standard_nodes::Compatible, Fdt};
 use log::LevelFilter;
 use opensbi_rt::{print, println};
 use spin::Lazy;
+use virtio_drivers::device::console::VirtIOConsole;
 use virtio_drivers::{
     device::{blk::VirtIOBlk, gpu::VirtIOGpu, input::VirtIOInput},
     transport::{
@@ -95,7 +96,8 @@ fn virtio_probe(node: FdtNode) {
 fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
     match transport.device_type() {
         DeviceType::Block => virtio_blk(transport, vaddr, size),
-        DeviceType::GPU => virtio_gpu(transport, vaddr, size),
+        // DeviceType::GPU => virtio_gpu(transport, vaddr, size),
+        DeviceType::Console => virtio_console(transport, vaddr, size),
         // DeviceType::Input => virtio_input(transport),
         // DeviceType::Network => virtio_net(transport),
         t => warn!("Unrecognized virtio device: {:?}", t),
@@ -170,6 +172,29 @@ fn virtio_input<T: Transport>(transport: T) {
     //     info!("mouse: {:?}", input.mouse_xy());
     // }
     // TODO: handle external interrupt
+}
+
+fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
+    // let mut console = VirtIOConsole::<HalImpl, _>::new(transport).unwrap();
+
+    let io_region = SafeIoRegion::new(vaddr, size);
+    let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
+    let mut console =
+        safe_virtio_drivers::device::console::VirtIOConsole::<MyHalImpl, MyTransport>::new(
+            transport,
+        )
+        .expect("failed to create console driver");
+
+    let info = console.info().unwrap();
+    println!("VirtIO console {} x {}", info.rows, info.columns);
+
+    for &c in b"Hello console!\n" {
+        console.send(c).expect("failed to send to console");
+    }
+    let c = console.recv_block().unwrap();
+    // if c.is_some(){
+    println!("Read {:?} from console.", c as char)
+    // }
 }
 
 fn virtio_net<T: Transport>(transport: T) {

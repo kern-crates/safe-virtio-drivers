@@ -10,6 +10,9 @@ pub struct ReadWrite<const OFFSET: usize>;
 
 pub trait ReadVolatile {
     fn read_u32(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<u32>;
+    fn read_u16(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<u16> {
+        self.read_u32(io_region).map(|v| v as u16)
+    }
 }
 
 pub trait WriteVolatile {

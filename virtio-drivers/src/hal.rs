@@ -7,6 +7,8 @@ use core::fmt::Debug;
 pub trait VirtIoDeviceIo: Send + Sync + Debug {
     fn read_volatile_u32_at(&self, off: usize) -> VirtIoResult<u32>;
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()>;
+    fn paddr(&self) -> PhysAddr;
+    fn vaddr(&self) -> VirtAddr;
 }
 
 impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
@@ -16,6 +18,14 @@ impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
 
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()> {
         self.as_ref().write_volatile_u32_at(off, data)
+    }
+
+    fn paddr(&self) -> PhysAddr {
+        self.as_ref().paddr()
+    }
+
+    fn vaddr(&self) -> VirtAddr {
+        self.as_ref().vaddr()
     }
 }
 

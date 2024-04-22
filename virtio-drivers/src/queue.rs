@@ -1,5 +1,5 @@
 use crate::error::{VirtIoError, VirtIoResult};
-use crate::hal::{DevicePage, Hal, QueuePage};
+use crate::hal::{Hal, QueuePage};
 use crate::transport::Transport;
 use crate::{align_up, pages};
 use alloc::boxed::Box;
@@ -121,7 +121,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     ///
     /// The input and output buffers must remain valid and not be accessed until a call to
     /// `pop_used` with the returned token succeeds.
-    fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
+    pub(super) fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
         assert_ne!(data.len(), 0);
         if self.avail_desc_index.len() < data.len() {
             return Err(VirtIoError::QueueFull);
@@ -156,6 +156,32 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         }
         Ok(false)
     }
+
+    /// Returns the descriptor index (a.k.a. token) of the next used element without popping it, or
+    /// `None` if the used ring is empty.
+    pub fn peek_used(&self) -> VirtIoResult<Option<u16>> {
+        if self.can_pop()? {
+            let last_used_slot = self.last_seen_used & (SIZE as u16 - 1);
+            let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
+            Ok(Some(used_ring.ring[last_used_slot as usize].id as u16))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Returns the number of free descriptors.
+    pub fn available_desc(&self) -> usize {
+        // #[cfg(feature = "alloc")]
+        // if self.indirect {
+        //     return if usize::from(self.num_used) == SIZE {
+        //         0
+        //     } else {
+        //         SIZE
+        //     };
+        // }
+        self.avail_desc_index.len()
+    }
+
     /// If the given token is next on the device used queue, pops it and returns the total buffer
     /// length which was used (written) by the device.
     ///
@@ -235,6 +261,7 @@ impl Descriptor {
 }
 pub struct DescFlag;
 impl DescFlag {
+    pub(crate) const EMPTY: u16 = 0;
     pub(crate) const NEXT: u16 = 1;
     pub(crate) const WRITE: u16 = 2;
     const INDIRECT: u16 = 4;

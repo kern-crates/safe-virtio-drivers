@@ -6,6 +6,7 @@ use core::fmt::Debug;
 use core::ops::BitAnd;
 use log::debug;
 pub mod mmio;
+// mod pci;
 
 /// A VirtIO transport layer.
 pub trait Transport {
