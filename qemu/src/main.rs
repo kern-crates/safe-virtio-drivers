@@ -80,7 +80,7 @@ fn virtio_probe(node: FdtNode) {
         match unsafe { MmioTransport::new(header) } {
             Err(e) => warn!("Error creating VirtIO MMIO transport: {}", e),
             Ok(transport) => {
-                info!(
+                warn!(
                     "Detected virtio MMIO device with vendor id {:#X}, device type {:?}, version {:?}",
                     transport.vendor_id(),
                     transport.device_type(),
@@ -96,7 +96,7 @@ fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
     match transport.device_type() {
         DeviceType::Block => virtio_blk(transport, vaddr, size),
         DeviceType::GPU => virtio_gpu(transport, vaddr, size),
-        // DeviceType::Input => virtio_input(transport),
+        DeviceType::Input => virtio_input(transport, vaddr, size),
         // DeviceType::Network => virtio_net(transport),
         t => warn!("Unrecognized virtio device: {:?}", t),
     }
@@ -161,14 +161,26 @@ fn virtio_gpu<T: Transport>(transport: T, vaddr: usize, size: usize) {
     info!("virtio-gpu test finished");
 }
 
-fn virtio_input<T: Transport>(transport: T) {
+fn virtio_input<T: Transport>(transport: T, va: usize, size: usize) {
     //let mut event_buf = [0u64; 32];
-    let mut _input =
-        VirtIOInput::<HalImpl, T>::new(transport).expect("failed to create input driver");
-    // loop {
-    //     input.ack_interrupt().expect("failed to ack");
-    //     info!("mouse: {:?}", input.mouse_xy());
-    // }
+    // let mut _input =
+    //     VirtIOInput::<HalImpl, T>::new(transport).expect("failed to create input driver");
+    let ior = SafeIoRegion::new(va, size);
+    let tr = MyTransport::new(Box::new(ior)).expect("transport create failed");
+    let mut input =
+        safe_virtio_drivers::device::input::VirtIOInput::<MyHalImpl, MyTransport>::new(tr)
+            .expect("input driver create failed");
+
+    info!("testing input... Press ESC or right-click to continue.");
+    loop {
+        input.ack_interrupt().expect("fail to ack");
+        if let Some(e) = input.pop_pending_event().expect("pop failed") {
+            info!("input: {:?}", e);
+            if e.event_type == 1 && (e.code == 1 || e.code == 273) && e.value == 0 {
+                break;
+            }
+        }
+    }
     // TODO: handle external interrupt
 }
 

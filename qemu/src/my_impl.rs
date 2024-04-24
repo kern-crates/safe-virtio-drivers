@@ -46,6 +46,19 @@ impl VirtIoDeviceIo for SafeIoRegion {
         }
         Ok(())
     }
+    #[inline]
+    fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8> {
+        let ptr = (self.base + off) as *const u8;
+        Ok(unsafe { ptr.read_volatile() })
+    }
+    #[inline]
+    fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()> {
+        let ptr = (self.base + off) as *mut u8;
+        unsafe {
+            ptr.write_volatile(data);
+        }
+        Ok(())
+    }
 }
 
 impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {
