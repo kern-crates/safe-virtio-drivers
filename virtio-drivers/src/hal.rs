@@ -1,16 +1,17 @@
 use crate::error::VirtIoResult;
-use crate::queue::{AvailRing, Descriptor, UsedRing};
+use crate::queue::{QueueLayout, QueueMutRef};
 use crate::{PhysAddr, VirtAddr};
 use alloc::boxed::Box;
 use core::fmt::Debug;
+use core::ops::Range;
 
 pub trait VirtIoDeviceIo: Send + Sync + Debug {
     fn read_volatile_u32_at(&self, off: usize) -> VirtIoResult<u32>;
     fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8>;
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()>;
     fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()>;
-    // fn paddr(&self) -> PhysAddr;
-    // fn vaddr(&self) -> VirtAddr;
+    fn paddr(&self) -> PhysAddr;
+    fn vaddr(&self) -> VirtAddr;
 }
 
 impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
@@ -26,13 +27,13 @@ impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
     fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()> {
         self.as_ref().write_volatile_u8_at(off, data)
     }
-    // fn paddr(&self) -> PhysAddr {
-    //     self.as_ref().paddr()
-    // }
+    fn paddr(&self) -> PhysAddr {
+        self.as_ref().paddr()
+    }
 
-    // fn vaddr(&self) -> VirtAddr {
-    //     self.as_ref().vaddr()
-    // }
+    fn vaddr(&self) -> VirtAddr {
+        self.as_ref().vaddr()
+    }
 }
 
 pub trait DevicePage: Send + Sync {
@@ -43,12 +44,7 @@ pub trait DevicePage: Send + Sync {
 }
 
 pub trait QueuePage<const SIZE: usize>: DevicePage {
-    fn as_descriptor_table_at<'a>(&self, offset: usize) -> &'a [Descriptor];
-    fn as_mut_descriptor_table_at<'a>(&mut self, offset: usize) -> &'a mut [Descriptor];
-    fn as_avail_ring_at<'a>(&self, offset: usize) -> &'a AvailRing<SIZE>;
-    fn as_mut_avail_ring<'a>(&mut self, offset: usize) -> &'a mut AvailRing<SIZE>;
-    fn as_used_ring<'a>(&self, offset: usize) -> &'a UsedRing<SIZE>;
-    fn as_mut_used_ring<'a>(&mut self, offset: usize) -> &'a mut UsedRing<SIZE>;
+    fn queue_ref_mut(&mut self, layout: &QueueLayout) -> QueueMutRef<SIZE>;
 }
 
 pub trait Hal<const SIZE: usize>: Send + Sync {

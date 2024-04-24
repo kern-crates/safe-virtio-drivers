@@ -48,8 +48,8 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOGpu<H, T> {
             "events_read: {:#x}, num_scanouts: {:#x}",
             events_read, num_scanouts
         );
-        let control_queue = VirtIoQueue::new(&mut transport, 0)?;
-        let cursor_queue = VirtIoQueue::new(&mut transport, 1)?;
+        let control_queue = VirtIoQueue::new(&mut transport, QUEUE_TRANSMIT)?;
+        let cursor_queue = VirtIoQueue::new(&mut transport, QUEUE_CURSOR)?;
         transport.finish_init()?;
 
         Ok(Self {

@@ -8,7 +8,7 @@ use crate::volatile::{ReadVolatile, WriteVolatile};
 use alloc::{boxed::Box, vec};
 
 mod ty;
-use log::{info, warn};
+
 use ty::*;
 
 const QUEUE_EVENT: u16 = 0;
@@ -68,23 +68,9 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
 
     /// Pop the pending event.
     pub fn pop_pending_event(&mut self) -> VirtIoResult<Option<InputEvent>> {
-        // info!("pop 1");
-        // self.event_queue.used_info();
         if let Some(token) = self.event_queue.peek_used()? {
-            // warn!("pop 2");
-            // let event = &mut self.event_buf[token as usize];
-            // Safe because we are passing the same buffer as we passed to `VirtQueue::add` and it
-            // is still valid.
-            // unsafe {
-            //     self.event_queue
-            //         .pop_used(token, &[], &mut [event.as_bytes_mut()])
-            //         .ok()?;
-            // }
             let _ = self.event_queue.pop_used(token)?;
             let event_saved = self.event_buf[token as usize];
-
-            // requeue
-            // Safe because buffer lasts as long as the queue.
             let new_token = self.event_queue.add(vec![Descriptor::new(
                 &self.event_buf[token as usize] as *const InputEvent as _,
                 size_of::<InputEvent>() as _,
@@ -95,17 +81,6 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
                 self.transport.notify(QUEUE_EVENT)?;
             }
             Ok(Some(event_saved))
-            // if let Ok(new_token) = unsafe { self.event_queue.add(&[], &mut [event.as_bytes_mut()]) }
-            // {
-            //     // This only works because nothing happen between `pop_used` and `add` that affects
-            //     // the list of free descriptors in the queue, so `add` reuses the descriptor which
-            //     // was just freed by `pop_used`.
-            //     assert_eq!(new_token, token);
-            //     if self.event_queue.should_notify() {
-            //         self.transport.notify(QUEUE_EVENT);
-            //     }
-            //     return Ok(Some(event_saved));
-            // }
         } else {
             Ok(None)
         }
@@ -119,14 +94,6 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
         subsel: u8,
         out: &mut [u8],
     ) -> VirtIoResult<u8> {
-        // Safe because config points to a valid MMIO region for the config space.
-
-        // unsafe {
-        //     volwrite!(self.config, select, select as u8);
-        //     volwrite!(self.config, subsel, subsel);
-        //     size = volread!(self.config, size);
-        //     data = volread!(self.config, data);
-        // }
         let config = InputConfig::default();
         let io_region = self.transport.io_region();
         config.select.write(select as _, io_region)?;
@@ -138,11 +105,11 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
     }
 }
 
-// impl<H: Hal<>, T: Transport> Drop for VirtIOInput<H, T> {
-//     fn drop(&mut self) {
-//         // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
-//         // after they have been freed.
-//         self.transport.queue_unset(QUEUE_EVENT);
-//         self.transport.queue_unset(QUEUE_STATUS);
-//     }
-// }
+impl<H: Hal<QUEUE_SIZE>, T: Transport> Drop for VirtIOInput<H, T> {
+    fn drop(&mut self) {
+        // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
+        // after they have been freed.
+        self.transport.queue_unset(QUEUE_EVENT).expect("failed to unset event queue");
+        self.transport.queue_unset(QUEUE_STATUS).expect("failed to unset status queue");
+    }
+}
