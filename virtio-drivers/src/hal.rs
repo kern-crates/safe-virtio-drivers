@@ -1,5 +1,5 @@
 use crate::error::VirtIoResult;
-use crate::queue::{AvailRing, Descriptor, UsedRing};
+use crate::queue::{QueueLayout, QueueMutRef};
 use crate::{PhysAddr, VirtAddr};
 use alloc::boxed::Box;
 use core::fmt::Debug;
@@ -43,12 +43,7 @@ pub trait DevicePage: Send + Sync {
 }
 
 pub trait QueuePage<const SIZE: usize>: DevicePage {
-    fn as_descriptor_table_at<'a>(&self, offset: usize) -> &'a [Descriptor];
-    fn as_mut_descriptor_table_at<'a>(&mut self, offset: usize) -> &'a mut [Descriptor];
-    fn as_avail_ring_at<'a>(&self, offset: usize) -> &'a AvailRing<SIZE>;
-    fn as_mut_avail_ring<'a>(&mut self, offset: usize) -> &'a mut AvailRing<SIZE>;
-    fn as_used_ring<'a>(&self, offset: usize) -> &'a UsedRing<SIZE>;
-    fn as_mut_used_ring<'a>(&mut self, offset: usize) -> &'a mut UsedRing<SIZE>;
+    fn queue_ref_mut(&mut self, layout: &QueueLayout) -> QueueMutRef<SIZE>;
 }
 
 pub trait Hal<const SIZE: usize>: Send + Sync {

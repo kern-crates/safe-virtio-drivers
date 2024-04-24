@@ -1,3 +1,4 @@
+#![feature(riscv_ext_intrinsics)]
 #![no_std]
 #![no_main]
 // #![deny(warnings)]
@@ -202,8 +203,8 @@ fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
     for &c in b"Hello console!\n" {
         console.send(c).expect("failed to send to console");
     }
-    let c = console.recv_block().unwrap();
-    println!("Read {:?} from console.", c as char)
+    let c = console.recv(true).unwrap();
+    println!("Read {:?} from console.", c)
 }
 
 fn virtio_net<T: Transport>(transport: T) {

@@ -8,10 +8,11 @@ use alloc::vec::Vec;
 use core::hint::spin_loop;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::sync::atomic::{fence, Ordering};
+use core::sync::atomic::{AtomicU16, fence, Ordering};
 
 pub struct VirtIoQueue<H: Hal<SIZE>, const SIZE: usize> {
     queue_page: Box<dyn QueuePage<SIZE>>,
+    queue_ref: QueueMutRef<SIZE>,
     // storage available descriptor indexes
     avail_desc_index: VecDeque<u16>,
     last_seen_used: u16,
@@ -38,9 +39,8 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             return Err(VirtIoError::InvalidParam);
         }
         let size = SIZE as u16;
-        let queue_page = H::dma_alloc(pages(Self::total_size()));
+        let mut queue_page = H::dma_alloc(pages(Self::total_size()));
         let descriptors_paddr = queue_page.paddr();
-        // eq to avail_ring_pa
         let driver_area_paddr = descriptors_paddr + Self::AVAIL_RING_OFFSET;
         let device_area_paddr = descriptors_paddr + Self::USED_RING_OFFSET;
         transport.queue_set(
@@ -51,9 +51,11 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             device_area_paddr,
         )?;
         let avail_desc_index = VecDeque::from_iter(0..SIZE as u16);
+        let queue_ref_mut = queue_page.queue_ref_mut(&QueueLayout::new::<SIZE>());
         Ok(VirtIoQueue {
             queue_page,
             queue_idx,
+            queue_ref: queue_ref_mut,
             avail_desc_index,
             last_seen_used: 0,
             poped_used: BTreeSet::new(),
@@ -94,8 +96,6 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     ///
     /// This will be false if the device has supressed notifications.
     pub fn should_notify(&self) -> bool {
-        // Read barrier, so we read a fresh value from the device.
-        fence(Ordering::SeqCst);
         // if self.event_idx {
         //     // instance of UsedRing.
         //     let avail_event = unsafe { (*self.used.as_ptr()).avail_event };
@@ -104,8 +104,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         //     // instance of UsedRing.
         //     unsafe { (*self.used.as_ptr()).flags & 0x0001 == 0 }
         // }
-        // self.queue_page.as_used_ring(Self::USED_RING_OFFSET).avail_event
-        self.queue_page.as_used_ring(Self::USED_RING_OFFSET).flags & 0x0001 == 0
+        self.queue_ref.used_ring.flags.load(Ordering::Acquire) & 0x0001 == 0
     }
 
     /// Add buffers to the virtqueue, return a token.
@@ -124,10 +123,8 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             return Err(VirtIoError::QueueFull);
         }
         let mut last = None;
-        let desc = self
-            .queue_page
-            .as_mut_descriptor_table_at(Self::DESCRIPTOR_TABLE_OFFSET);
-        let avail_ring = self.queue_page.as_mut_avail_ring(Self::AVAIL_RING_OFFSET);
+        let desc = &mut self.queue_ref.descriptor_table;
+        let avail_ring = &mut self.queue_ref.avail_ring;
         for mut d in data.into_iter().rev() {
             let id = self.avail_desc_index.pop_front().unwrap();
             if let Some(nex) = last {
@@ -136,33 +133,22 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             desc[id as usize % SIZE] = d;
             last = Some(id);
         }
+        fence(Ordering::SeqCst);
         let head = last.unwrap();
         // change the avail ring
         avail_ring.push(head)?;
-        // Write barrier so that device sees changes to descriptor table and available ring before
-        // change to available index.
-        fence(Ordering::SeqCst);
         Ok(head)
     }
 
     pub(crate) fn can_pop(&self, id: u16) -> VirtIoResult<bool> {
-        fence(Ordering::SeqCst);
-        let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
-        if self.last_seen_used == used_ring.idx {
+        let used_ring = &self.queue_ref.used_ring;
+        let idx = used_ring.idx.load(Ordering::Acquire);
+        if self.last_seen_used == idx {
             return Ok(false);
         }
-        // ---------------------------------------
-        // let skip = used_ring.idx.wrapping_sub(self.last_seen_used);
-        // let mut current_index = self.last_seen_used;
-        // for _ in 0..skip {
-        //     if used_ring.ring[current_index as usize % SIZE].id == id as u32 {
-        //         return Ok(true);
-        //     }
-        //     current_index = current_index.wrapping_add(1);
-        // }
-        //-------------------------------------------
+        let skip = idx.wrapping_sub(self.last_seen_used);
         let mut current_index = self.last_seen_used;
-        while current_index != used_ring.idx {
+        for _ in 0..skip {
             if used_ring.ring[current_index as usize % SIZE].id == id as u32 {
                 return Ok(true);
             }
@@ -173,9 +159,8 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     /// Returns the descriptor index (a.k.a. token) of the next used element without popping it, or
     /// `None` if the used ring is empty.
     pub(crate) fn peek_used(&self) -> VirtIoResult<Option<u16>> {
-        fence(Ordering::SeqCst);
-        let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
-        if self.last_seen_used == used_ring.idx {
+        let used_ring = &self.queue_ref.used_ring;
+        if self.last_seen_used == used_ring.idx.load(Ordering::Acquire) {
             return Ok(None);
         }
         let id = used_ring.ring[self.last_seen_used as usize % SIZE].id;
@@ -208,13 +193,12 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         if !self.can_pop(id)? {
             return Err(VirtIoError::NotReady);
         }
-        let used_ring = self.queue_page.as_mut_used_ring(Self::USED_RING_OFFSET);
-        let desc = self
-            .queue_page
-            .as_descriptor_table_at(Self::DESCRIPTOR_TABLE_OFFSET);
-        assert_ne!(self.last_seen_used, used_ring.idx);
+        let used_ring = &mut self.queue_ref.used_ring;
+        let desc = &self.queue_ref.descriptor_table;
+        let idx = used_ring.idx.load(Ordering::Acquire);
+        assert_ne!(self.last_seen_used, idx);
         let mut header = self.last_seen_used.wrapping_sub(1);
-        let skip = used_ring.idx.wrapping_sub(self.last_seen_used);
+        let skip = idx.wrapping_sub(self.last_seen_used);
         let mut tmp_index = self.last_seen_used;
         for _ in 0..skip {
             if used_ring.ring[tmp_index as usize % SIZE].id == id as u32 {
@@ -242,6 +226,30 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         }
         Ok(len)
     }
+}
+
+
+pub struct QueueLayout{
+    pub descriptor_table_offset: usize,
+    pub avail_ring_offset: usize,
+    pub used_ring_offset: usize,
+}
+
+impl QueueLayout{
+    pub fn new<const SIZE:usize>()->Self{
+        Self{
+            descriptor_table_offset: 0,
+            avail_ring_offset: size_of::<Descriptor>() * SIZE,
+            used_ring_offset: align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>()),
+        }
+    }
+}
+
+
+pub struct QueueMutRef<const SIZE:usize>{
+    pub descriptor_table: &'static mut [Descriptor],
+    pub avail_ring: &'static mut AvailRing<SIZE>,
+    pub used_ring: &'static mut UsedRing<SIZE>,
 }
 
 #[repr(C, align(16))]
@@ -282,30 +290,30 @@ impl DescFlag {
 #[repr(C)]
 #[derive(Debug)]
 pub struct AvailRing<const SIZE: usize> {
-    flags: u16,
+    flags: AtomicU16,
     /// A driver MUST NOT decrement the idx.
-    idx: u16,
+    idx: AtomicU16,
     ring: [u16; SIZE],
     /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
-    used_event: u16,
+    used_event: AtomicU16,
 }
 impl<const SIZE: usize> AvailRing<SIZE> {
     fn push(&mut self, id: u16) -> VirtIoResult<u16> {
         // have enough space, because (avail ring's len == desc's)
-        self.ring[self.idx as usize % SIZE] = id;
-        let res = self.idx;
-        self.idx = self.idx.wrapping_add(1);
+        let res = self.idx.load(Ordering::Acquire);
+        self.ring[res as  usize % SIZE] = id;
+        self.idx.store(res.wrapping_add(1), Ordering::Release);
         Ok(res)
     }
 }
 #[repr(C)]
 #[derive(Debug)]
 pub struct UsedRing<const SIZE: usize> {
-    flags: u16,
-    idx: u16,
+    flags: AtomicU16,
+    idx: AtomicU16,
     ring: [UsedElem; SIZE],
     /// Only used if `VIRTIO_F_EVENT_IDX` is negotiated.
-    avail_event: u16,
+    avail_event: AtomicU16,
 }
 
 #[repr(C)]
