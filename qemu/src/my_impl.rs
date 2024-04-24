@@ -1,10 +1,11 @@
 use crate::DMA_PADDR;
 use alloc::boxed::Box;
+use core::ops::Range;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
 use safe_virtio_drivers::error::VirtIoResult;
 use safe_virtio_drivers::hal::{DevicePage, QueuePage, VirtIoDeviceIo};
-use safe_virtio_drivers::queue::{AvailRing, Descriptor, UsedRing};
+use safe_virtio_drivers::queue::{AvailRing, Descriptor, QueueLayout, QueueMutRef, UsedRing};
 use safe_virtio_drivers::{PhysAddr, VirtAddr, PAGE_SIZE};
 
 pub struct MyHalImpl;
@@ -39,17 +40,17 @@ impl VirtIoDeviceIo for SafeIoRegion {
         Ok(unsafe { ptr.read_volatile() })
     }
     #[inline]
+    fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8> {
+        let ptr = (self.base + off) as *const u8;
+        Ok(unsafe { ptr.read_volatile() })
+    }
+    #[inline]
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()> {
         let ptr = (self.base + off) as *mut u32;
         unsafe {
             ptr.write_volatile(data);
         }
         Ok(())
-    }
-    #[inline]
-    fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8> {
-        let ptr = (self.base + off) as *const u8;
-        Ok(unsafe { ptr.read_volatile() })
     }
     #[inline]
     fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()> {
@@ -69,12 +70,14 @@ impl VirtIoDeviceIo for SafeIoRegion {
 }
 
 impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {
+    #[inline]
     fn dma_alloc(pages: usize) -> Box<dyn QueuePage<SIZE>> {
         let paddr = DMA_PADDR.fetch_add(PAGE_SIZE * pages, Ordering::SeqCst);
         info!("<dma_alloc>alloc DMA: paddr={:#x}, pages={}", paddr, pages);
         Box::new(Page::new(paddr, PAGE_SIZE * pages))
     }
 
+    #[inline]
     fn dma_alloc_buf(pages: usize) -> Box<dyn DevicePage> {
         let paddr = DMA_PADDR.fetch_add(PAGE_SIZE * pages, Ordering::SeqCst);
         info!(
@@ -83,66 +86,72 @@ impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {
         );
         Box::new(Page::new(paddr, PAGE_SIZE * pages))
     }
+    #[inline]
+    fn mem_flush(addr_range: Range<usize>) {
+        // core::arch::riscv64::sfence_vma_all()
+        // align down to 64 bytes
+        // info!(
+        //     "<mem_flush> flush addr_range: {:#x}..{:#x}",
+        //     addr_range.start, addr_range.end
+        // );
+        // let start = addr_range.start & !0x3f;
+        // let end = (addr_range.end + 0x3f) & !0x3f;
+        // for addr in (start..end).step_by(64) {
+        //     unsafe {
+        //         core::arch::riscv64::sfence_vma_vaddr(addr);
+        //     }
+        // }
+        unsafe {
+            core::arch::riscv64::sfence_vma_all()
+        };
+    }
 }
 
+
 impl DevicePage for Page {
+    #[inline]
     fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.pa as *mut u8, self.size) }
     }
 
+    #[inline]
     fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.pa as *const u8, self.size) }
     }
 
+    #[inline]
     fn paddr(&self) -> VirtAddr {
         self.pa as VirtAddr
     }
 
+    #[inline]
     fn vaddr(&self) -> PhysAddr {
         self.pa
     }
 }
 
 impl<const SIZE: usize> QueuePage<SIZE> for Page {
-    fn as_descriptor_table_at<'a>(&self, offset: usize) -> &'a [Descriptor] {
-        unsafe {
-            let ptr = (self.pa + offset) as *const Descriptor;
-            core::slice::from_raw_parts(ptr, SIZE)
-        }
-    }
-
-    fn as_mut_descriptor_table_at<'a>(&mut self, offset: usize) -> &'a mut [Descriptor] {
-        unsafe {
-            let ptr = (self.pa + offset) as *mut Descriptor;
+    fn queue_ref_mut(&mut self, layout: &QueueLayout) -> QueueMutRef<SIZE> {
+        let desc_table_offset = layout.descriptor_table_offset;
+        let table = unsafe {
+            let ptr = (self.pa + desc_table_offset) as *mut  Descriptor;
             core::slice::from_raw_parts_mut(ptr, SIZE)
-        }
-    }
-
-    fn as_avail_ring_at<'a>(&self, offset: usize) -> &'a AvailRing<SIZE> {
-        unsafe {
-            let ptr = (self.pa + offset) as *const AvailRing<SIZE>;
-            &*ptr
-        }
-    }
-
-    fn as_mut_avail_ring<'a>(&mut self, offset: usize) -> &'a mut AvailRing<SIZE> {
-        unsafe {
-            let ptr = (self.pa + offset) as *mut AvailRing<SIZE>;
+        };
+        let avail_ring_offset = layout.avail_ring_offset;
+        let avail_ring = unsafe {
+            let ptr = (self.pa + avail_ring_offset) as *mut AvailRing<SIZE>;
             &mut *ptr
-        }
-    }
+        };
 
-    fn as_used_ring<'a>(&self, offset: usize) -> &'a UsedRing<SIZE> {
-        unsafe {
-            let ptr = (self.pa + offset) as *const UsedRing<SIZE>;
-            &*ptr
-        }
-    }
-
-    fn as_mut_used_ring<'a>(&mut self, offset: usize) -> &'a mut UsedRing<SIZE> {
-        unsafe {
-            let ptr = (self.pa + offset) as *mut UsedRing<SIZE>;
+        let used_ring_offset = layout.used_ring_offset;
+        let used_ring = unsafe {
+            let ptr = (self.pa + used_ring_offset) as *mut UsedRing<SIZE>;
             &mut *ptr
+        };
+        QueueMutRef{
+            descriptor_table:table,
+            avail_ring,
+            used_ring,
         }
     }
 }
