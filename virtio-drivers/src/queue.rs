@@ -1,5 +1,5 @@
 use crate::error::{VirtIoError, VirtIoResult};
-use crate::hal::{DevicePage, Hal, QueuePage};
+use crate::hal::{Hal, QueuePage};
 use crate::transport::Transport;
 use crate::{align_up, pages};
 use alloc::boxed::Box;
@@ -122,7 +122,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     ///
     /// The input and output buffers must remain valid and not be accessed until a call to
     /// `pop_used` with the returned token succeeds.
-    pub(crate) fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
+    pub(super) fn add(&mut self, data: Vec<Descriptor>) -> VirtIoResult<u16> {
         assert_ne!(data.len(), 0);
         if self.avail_desc_index.len() < data.len() {
             return Err(VirtIoError::QueueFull);
@@ -174,7 +174,9 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         }
         Ok(false)
     }
-    pub(crate) fn peek_used(&mut self) -> VirtIoResult<Option<u16>> {
+    /// Returns the descriptor index (a.k.a. token) of the next used element without popping it, or
+    /// `None` if the used ring is empty.
+    pub(crate) fn peek_used(&self) -> VirtIoResult<Option<u16>> {
         fence(Ordering::SeqCst);
         let used_ring = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
         if self.last_seen_used == used_ring.idx {
@@ -183,6 +185,20 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         let id = used_ring.ring[self.last_seen_used as usize % SIZE].id;
         Ok(Some(id as _))
     }
+
+    /// Returns the number of free descriptors.
+    pub fn available_desc(&self) -> usize {
+        // #[cfg(feature = "alloc")]
+        // if self.indirect {
+        //     return if usize::from(self.num_used) == SIZE {
+        //         0
+        //     } else {
+        //         SIZE
+        //     };
+        // }
+        self.avail_desc_index.len()
+    }
+
     /// If the given token is next on the device used queue, pops it and returns the total buffer
     /// length which was used (written) by the device.
     ///
@@ -267,6 +283,7 @@ impl Descriptor {
 }
 pub struct DescFlag;
 impl DescFlag {
+    pub(crate) const EMPTY: u16 = 0;
     pub(crate) const NEXT: u16 = 1;
     pub(crate) const WRITE: u16 = 2;
     const INDIRECT: u16 = 4;

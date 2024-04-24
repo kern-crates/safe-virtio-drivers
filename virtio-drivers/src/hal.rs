@@ -9,6 +9,8 @@ pub trait VirtIoDeviceIo: Send + Sync + Debug {
     fn read_volatile_u8_at(&self, off: usize) -> VirtIoResult<u8>;
     fn write_volatile_u32_at(&self, off: usize, data: u32) -> VirtIoResult<()>;
     fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()>;
+    // fn paddr(&self) -> PhysAddr;
+    // fn vaddr(&self) -> VirtAddr;
 }
 
 impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
@@ -24,13 +26,20 @@ impl VirtIoDeviceIo for Box<dyn VirtIoDeviceIo> {
     fn write_volatile_u8_at(&self, off: usize, data: u8) -> VirtIoResult<()> {
         self.as_ref().write_volatile_u8_at(off, data)
     }
+    // fn paddr(&self) -> PhysAddr {
+    //     self.as_ref().paddr()
+    // }
+
+    // fn vaddr(&self) -> VirtAddr {
+    //     self.as_ref().vaddr()
+    // }
 }
 
 pub trait DevicePage: Send + Sync {
     fn as_mut_slice(&mut self) -> &mut [u8];
     fn as_slice(&self) -> &[u8];
-    fn paddr(&self) -> VirtAddr;
-    fn vaddr(&self) -> PhysAddr;
+    fn paddr(&self) -> PhysAddr;
+    fn vaddr(&self) -> VirtAddr;
 }
 
 pub trait QueuePage<const SIZE: usize>: DevicePage {

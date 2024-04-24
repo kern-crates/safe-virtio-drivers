@@ -56,9 +56,10 @@ qemu-legacy: kernel $(img)
 		-kernel $(kernel) \
 		-drive file=$(img),if=none,format=raw,id=x0 \
 		-device virtio-blk-device,drive=x0 \
-		-device virtio-gpu-device \
-		-device virtio-keyboard-device \
-		-device virtio-mouse-device \
+		-device virtio-serial-device,id=virtio-serial0 \
+#		-device virtio-gpu-device \
+#		-device virtio-keyboard-device \
+#		-device virtio-mouse-device \
 #		-device virtio-net-device,netdev=net0 \
 #		-netdev user,id=net0,hostfwd=tcp::5555-:5555
 

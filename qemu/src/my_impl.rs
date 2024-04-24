@@ -59,6 +59,10 @@ impl VirtIoDeviceIo for SafeIoRegion {
         }
         Ok(())
     }
+    // #[inline]
+    // fn paddr(&self) -> PhysAddr {}
+    // #[inline]
+    // fn vaddr(&self) -> VirtAddr {}
 }
 
 impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {

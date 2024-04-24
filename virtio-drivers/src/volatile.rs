@@ -46,6 +46,13 @@ impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET, u32> {
         io_region.read_volatile_u32_at(OFFSET)
     }
 }
+impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET, u16> {
+    type T = u16;
+    #[inline]
+    fn read(&self, io_region: &dyn VirtIoDeviceIo) -> VirtIoResult<Self::T> {
+        io_region.read_volatile_u32_at(OFFSET).map(|x| x as Self::T)
+    }
+}
 impl<const OFFSET: usize> ReadVolatile for ReadOnly<OFFSET, u8> {
     type T = u8;
     #[inline]
