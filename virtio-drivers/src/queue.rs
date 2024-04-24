@@ -8,8 +8,6 @@ use alloc::vec::Vec;
 use core::hint::spin_loop;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use log::info;
-
 use core::sync::atomic::{fence, Ordering};
 
 pub struct VirtIoQueue<H: Hal<SIZE>, const SIZE: usize> {
@@ -40,7 +38,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             return Err(VirtIoError::InvalidParam);
         }
         let size = SIZE as u16;
-        let mut queue_page = H::dma_alloc(pages(Self::total_size()));
+        let queue_page = H::dma_alloc(pages(Self::total_size()));
         let descriptors_paddr = queue_page.paddr();
         // eq to avail_ring_pa
         let driver_area_paddr = descriptors_paddr + Self::AVAIL_RING_OFFSET;
@@ -52,8 +50,6 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             driver_area_paddr,
             device_area_paddr,
         )?;
-        queue_page.as_mut_avail_ring(Self::AVAIL_RING_OFFSET).init();
-
         let avail_desc_index = VecDeque::from_iter(0..SIZE as u16);
         Ok(VirtIoQueue {
             queue_page,
@@ -65,7 +61,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         })
     }
 
-    pub(crate) const fn total_size() -> usize {
+    const fn total_size() -> usize {
         align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>())
             + align_up(size_of::<UsedRing<SIZE>>())
     }
@@ -231,7 +227,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         assert_ne!(header, self.last_seen_used.wrapping_sub(1));
         self.poped_used.insert(header);
 
-        let mut now = used_ring.ring[header as usize % SIZE].id as usize;
+        let mut now = id as usize;
         // todo!(fix it)
         let len = used_ring.ring[header as usize % SIZE].len;
         self.avail_desc_index.push_back(now as _);
@@ -245,11 +241,6 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             self.last_seen_used += 1;
         }
         Ok(len)
-    }
-    pub(crate) fn used_info(&self) {
-        let used = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
-        info!("used-idx  = {}", used.idx);
-        info!("last-seen = {}", self.last_seen_used);
     }
 }
 
@@ -299,10 +290,6 @@ pub struct AvailRing<const SIZE: usize> {
     used_event: u16,
 }
 impl<const SIZE: usize> AvailRing<SIZE> {
-    fn init(&mut self) {
-        self.flags = 0;
-        self.idx = 0;
-    }
     fn push(&mut self, id: u16) -> VirtIoResult<u16> {
         // have enough space, because (avail ring's len == desc's)
         self.ring[self.idx as usize % SIZE] = id;

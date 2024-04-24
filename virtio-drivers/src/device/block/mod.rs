@@ -162,3 +162,11 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOBlk<H, T> {
         resp.into()
     }
 }
+
+impl<H: Hal<QUEUE_SIZE>, T: Transport> Drop for VirtIOBlk<H, T> {
+    fn drop(&mut self) {
+        self.transport
+            .queue_unset(0)
+            .expect("failed to unset queue");
+    }
+}

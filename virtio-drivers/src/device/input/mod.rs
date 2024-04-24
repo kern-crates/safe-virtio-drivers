@@ -8,7 +8,7 @@ use crate::volatile::{ReadVolatile, WriteVolatile};
 use alloc::{boxed::Box, vec};
 
 mod ty;
-use log::{info, warn};
+
 use ty::*;
 
 const QUEUE_EVENT: u16 = 0;

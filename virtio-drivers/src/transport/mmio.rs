@@ -154,42 +154,6 @@ pub struct VirtIOHeader {
     // new interface
     config_generation: ReadOnly<0xfc, u32>,
 }
-
-// impl Default for VirtIOHeader {
-//     fn default() -> Self {
-//         Self {
-//             magic: Default::default(),
-//             version: Default::default(),
-//             device_id: Default::default(),
-//             vendor_id: Default::default(),
-//             device_features: Default::default(),
-//             device_features_sel: Default::default(),
-//             driver_features: Default::default(),
-//             driver_features_sel: Default::default(),
-//             legacy_guest_page_size: Default::default(),
-//             queue_sel: Default::default(),
-//             queue_num_max: Default::default(),
-//             queue_num: Default::default(),
-//             legacy_queue_align: Default::default(),
-//             legacy_queue_pfn: Default::default(),
-//             queue_ready: Default::default(),
-//             queue_notify: Default::default(),
-//             interrupt_status: Default::default(),
-//             interrupt_ack: Default::default(),
-//             status: Default::default(),
-//             // queue_desc_low: Default::default(),
-//             // queue_desc_high: Default::default(),
-//             queue_desc: Default::default(),
-//             // queue_driver_low: Default::default(),
-//             // queue_driver_high: Default::default(),
-//             queue_driver: Default::default(),
-//             // queue_device_low: Default::default(),
-//             // queue_device_high: Default::default(),
-//             queue_device: Default::default(),
-//             config_generation: Default::default(),
-//         }
-//     }
-// }
 pub(crate) const LEGACY_VERSION: u32 = 1;
 pub(crate) const MODERN_VERSION: u32 = 2;
 
@@ -362,30 +326,12 @@ impl Transport for MmioTransport {
             MmioVersion::Modern => {
                 self.header.queue_sel.write(queue as _, &self.io_region)?;
                 self.header.queue_num.write(size, &self.io_region)?;
-                // self.header
-                //     .queue_desc_low
-                //     .write(descriptors as _, &self.io_region)?;
-                // self.header
-                //     .queue_desc_high
-                //     .write((descriptors >> 32) as _, &self.io_region)?;
                 self.header
                     .queue_desc
                     .write(descriptors as _, &self.io_region)?;
-                // self.header
-                //     .queue_driver_low
-                //     .write(driver_area as _, &self.io_region)?;
-                // self.header
-                //     .queue_driver_high
-                //     .write((driver_area >> 32) as _, &self.io_region)?;
                 self.header
                     .queue_driver
                     .write(driver_area as _, &self.io_region)?;
-                // self.header
-                //     .queue_device_low
-                //     .write(device_area as _, &self.io_region)?;
-                // self.header
-                //     .queue_device_high
-                //     .write((device_area >> 32) as _, &self.io_region)?;
                 self.header
                     .queue_device
                     .write(device_area as _, &self.io_region)?;
@@ -408,14 +354,8 @@ impl Transport for MmioTransport {
                 // Wait until we read the same value back, to ensure synchronisation (see 4.2.2.2).
                 while self.header.queue_ready.read(&self.io_region)? != 0 {}
                 self.header.queue_num.write(0, &self.io_region)?;
-                // self.header.queue_desc_low.write(0, &self.io_region)?;
-                // self.header.queue_desc_high.write(0, &self.io_region)?;
                 self.header.queue_desc.write(0, &self.io_region)?;
-                // self.header.queue_driver_low.write(0, &self.io_region)?;
-                // self.header.queue_driver_high.write(0, &self.io_region)?;
                 self.header.queue_driver.write(0, &self.io_region)?;
-                // self.header.queue_device_low.write(0, &self.io_region)?;
-                // self.header.queue_device_high.write(0, &self.io_region)
                 self.header.queue_device.write(0, &self.io_region)
             }
         }

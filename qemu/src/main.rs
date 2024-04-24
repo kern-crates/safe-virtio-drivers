@@ -188,7 +188,6 @@ fn virtio_input<T: Transport>(transport: T, va: usize, size: usize) {
 
 fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
     // let mut console = VirtIOConsole::<HalImpl, _>::new(transport).unwrap();
-
     let io_region = SafeIoRegion::new(vaddr, size);
     let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
     let mut console =
@@ -204,9 +203,7 @@ fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
         console.send(c).expect("failed to send to console");
     }
     let c = console.recv_block().unwrap();
-    // if c.is_some(){
     println!("Read {:?} from console.", c as char)
-    // }
 }
 
 fn virtio_net<T: Transport>(transport: T) {

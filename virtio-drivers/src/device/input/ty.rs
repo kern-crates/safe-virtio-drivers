@@ -58,16 +58,6 @@ pub(crate) struct InputConfig {
     pub(crate) data: ReadOnly<0x8, Array<128, u8>>, // 8-136
 }
 
-// impl Default for InputConfig {
-//     fn default() -> Self {
-//         Self {
-//             select: Default::default(),
-//             subsel: Default::default(),
-//             size: Default::default(),
-//         }
-//     }
-// }
-
 /// Both queues use the same `virtio_input_event` struct. `type`, `code` and `value`
 /// are filled according to the Linux input layer (evdev) interface.
 #[repr(C)]
