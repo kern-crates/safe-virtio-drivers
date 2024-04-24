@@ -8,6 +8,7 @@ use crate::volatile::{ReadVolatile, WriteVolatile};
 use alloc::{boxed::Box, vec};
 
 mod ty;
+use log::{info, warn};
 use ty::*;
 
 const QUEUE_EVENT: u16 = 0;
@@ -31,6 +32,7 @@ pub struct VirtIOInput<H: Hal<QUEUE_SIZE>, T: Transport> {
 impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
     /// Create a new VirtIO-Input driver.
     pub fn new(mut transport: T) -> VirtIoResult<Self> {
+        transport.begin_init(SUPPORTED_FEATURES)?;
         let event_buf = Box::new([InputEvent::default(); QUEUE_SIZE]);
 
         let mut event_queue = VirtIoQueue::new(&mut transport, QUEUE_EVENT)?;
@@ -66,7 +68,10 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
 
     /// Pop the pending event.
     pub fn pop_pending_event(&mut self) -> VirtIoResult<Option<InputEvent>> {
+        // info!("pop 1");
+        // self.event_queue.used_info();
         if let Some(token) = self.event_queue.peek_used()? {
+            // warn!("pop 2");
             // let event = &mut self.event_buf[token as usize];
             // Safe because we are passing the same buffer as we passed to `VirtQueue::add` and it
             // is still valid.

@@ -8,6 +8,7 @@ use alloc::vec::Vec;
 use core::hint::spin_loop;
 use core::marker::PhantomData;
 use core::mem::size_of;
+use log::info;
 
 use core::sync::atomic::{fence, Ordering};
 
@@ -179,7 +180,7 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         if self.last_seen_used == used_ring.idx {
             return Ok(None);
         }
-        let id = used_ring.ring[self.last_seen_used as usize].id;
+        let id = used_ring.ring[self.last_seen_used as usize % SIZE].id;
         Ok(Some(id as _))
     }
     /// If the given token is next on the device used queue, pops it and returns the total buffer
@@ -228,6 +229,11 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
             self.last_seen_used += 1;
         }
         Ok(len)
+    }
+    pub(crate) fn used_info(&self) {
+        let used = self.queue_page.as_used_ring(Self::USED_RING_OFFSET);
+        info!("used-idx  = {}", used.idx);
+        info!("last-seen = {}", self.last_seen_used);
     }
 }
 
