@@ -86,27 +86,7 @@ impl<const SIZE: usize> safe_virtio_drivers::hal::Hal<SIZE> for MyHalImpl {
         );
         Box::new(Page::new(paddr, PAGE_SIZE * pages))
     }
-    #[inline]
-    fn mem_flush(addr_range: Range<usize>) {
-        // core::arch::riscv64::sfence_vma_all()
-        // align down to 64 bytes
-        // info!(
-        //     "<mem_flush> flush addr_range: {:#x}..{:#x}",
-        //     addr_range.start, addr_range.end
-        // );
-        // let start = addr_range.start & !0x3f;
-        // let end = (addr_range.end + 0x3f) & !0x3f;
-        // for addr in (start..end).step_by(64) {
-        //     unsafe {
-        //         core::arch::riscv64::sfence_vma_vaddr(addr);
-        //     }
-        // }
-        unsafe {
-            core::arch::riscv64::sfence_vma_all()
-        };
-    }
 }
-
 
 impl DevicePage for Page {
     #[inline]
@@ -134,7 +114,7 @@ impl<const SIZE: usize> QueuePage<SIZE> for Page {
     fn queue_ref_mut(&mut self, layout: &QueueLayout) -> QueueMutRef<SIZE> {
         let desc_table_offset = layout.descriptor_table_offset;
         let table = unsafe {
-            let ptr = (self.pa + desc_table_offset) as *mut  Descriptor;
+            let ptr = (self.pa + desc_table_offset) as *mut Descriptor;
             core::slice::from_raw_parts_mut(ptr, SIZE)
         };
         let avail_ring_offset = layout.avail_ring_offset;
@@ -148,8 +128,8 @@ impl<const SIZE: usize> QueuePage<SIZE> for Page {
             let ptr = (self.pa + used_ring_offset) as *mut UsedRing<SIZE>;
             &mut *ptr
         };
-        QueueMutRef{
-            descriptor_table:table,
+        QueueMutRef {
+            descriptor_table: table,
             avail_ring,
             used_ring,
         }

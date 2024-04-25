@@ -10,3 +10,13 @@ impl<const SIZE: usize, T: Copy + Default> Default for Array<SIZE, T> {
         }
     }
 }
+impl<const SIZE: usize, T: Copy + Default> From<[T; SIZE]> for Array<SIZE, T> {
+    fn from(data: [T; SIZE]) -> Self {
+        Self { data }
+    }
+}
+impl<const SIZE: usize, T: Copy + Default> From<Array<SIZE, T>> for [T; SIZE] {
+    fn from(data: Array<SIZE, T>) -> Self {
+        data.data
+    }
+}
