@@ -65,17 +65,17 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOBlk<H, T> {
     /// Sends the given request to the device and waits for a response, including the given data.
     fn request_read(&mut self, request: BlkReq, data: &mut [u8]) -> VirtIoResult<()> {
         let resp = BlkRespStatus::default();
-        let req = Descriptor::new(
+        let req = Descriptor::new::<QUEUE_SIZE, H>(
             &request as *const _ as _,
             size_of_val(&request) as _,
             DescFlag::NEXT,
         );
-        let data = Descriptor::new(
+        let data = Descriptor::new::<QUEUE_SIZE, H>(
             data.as_ptr() as _,
             data.len() as _,
             DescFlag::NEXT | DescFlag::WRITE,
         );
-        let res = Descriptor::new(
+        let res = Descriptor::new::<QUEUE_SIZE, H>(
             &resp as *const _ as _,
             size_of_val(&resp) as _,
             DescFlag::WRITE,
@@ -89,13 +89,14 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOBlk<H, T> {
     /// Sends the given request and data to the device and waits for a response.
     fn request_write(&mut self, request: BlkReq, data: &[u8]) -> VirtIoResult<()> {
         let resp = BlkRespStatus::default();
-        let req = Descriptor::new(
+        let req = Descriptor::new::<QUEUE_SIZE, H>(
             &request as *const _ as _,
             size_of_val(&request) as _,
             DescFlag::NEXT,
         );
-        let data = Descriptor::new(data.as_ptr() as _, data.len() as _, DescFlag::NEXT);
-        let res = Descriptor::new(
+        let data =
+            Descriptor::new::<QUEUE_SIZE, H>(data.as_ptr() as _, data.len() as _, DescFlag::NEXT);
+        let res = Descriptor::new::<QUEUE_SIZE, H>(
             &resp as *const _ as _,
             size_of_val(&resp) as _,
             DescFlag::WRITE,
@@ -145,12 +146,12 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOBlk<H, T> {
     fn request(&mut self, request: BlkReq) -> VirtIoResult<()> {
         let resp = BlkRespStatus::default();
         let desc_vec = vec![
-            Descriptor::new(
+            Descriptor::new::<QUEUE_SIZE, H>(
                 &request as *const _ as _,
                 size_of_val(&request) as _,
                 DescFlag::NEXT,
             ),
-            Descriptor::new(
+            Descriptor::new::<QUEUE_SIZE, H>(
                 &resp as *const _ as _,
                 size_of_val(&resp) as _,
                 DescFlag::WRITE,

@@ -3,7 +3,6 @@ use crate::queue::{QueueLayout, QueueMutRef};
 use crate::{PhysAddr, VirtAddr};
 use alloc::boxed::Box;
 use core::fmt::Debug;
-use core::ops::Range;
 
 pub trait VirtIoDeviceIo: Send + Sync + Debug {
     fn read_volatile_u32_at(&self, off: usize) -> VirtIoResult<u32>;
@@ -50,6 +49,7 @@ pub trait QueuePage<const SIZE: usize>: DevicePage {
 pub trait Hal<const SIZE: usize>: Send + Sync {
     fn dma_alloc(pages: usize) -> Box<dyn QueuePage<SIZE>>;
     fn dma_alloc_buf(pages: usize) -> Box<dyn DevicePage>;
+    fn to_paddr(va: usize) -> usize;
 }
 
 /// The direction in which a buffer is passed.

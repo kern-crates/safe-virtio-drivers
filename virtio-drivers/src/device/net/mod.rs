@@ -1,175 +1,102 @@
 //! Driver for VirtIO network devices.
-mod dev;
-mod dev_raw;
-mod net_buf;
 
-use core::mem::size_of;
+mod raw;
+mod ty;
 
-pub use self::dev_raw::VirtIONetRaw;
-pub use self::{dev::VirtIONet, net_buf::RxBuffer, net_buf::TxBuffer};
-use crate::common::Array;
-use crate::transport::mmio::CONFIG_OFFSET;
+extern crate alloc;
+use crate::{
+    error::{VirtIoError, VirtIoResult},
+    hal::Hal,
+    transport::Transport,
+};
+use alloc::vec::Vec;
+pub use raw::VirtIONetRaw;
 
-use crate::volatile::ReadOnly;
-use bitflags::bitflags;
-
-const MAX_BUFFER_LEN: usize = 65535;
-const MIN_BUFFER_LEN: usize = 1526;
-const NET_HDR_SIZE: usize = core::mem::size_of::<VirtioNetHdr>();
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-    struct Features: u64 {
-        /// Device handles packets with partial checksum.
-        /// This "checksum offload" is a common feature on modern network cards.
-        const CSUM = 1 << 0;
-        /// Driver handles packets with partial checksum.
-        const GUEST_CSUM = 1 << 1;
-        /// Control channel offloads reconfiguration support.
-        const CTRL_GUEST_OFFLOADS = 1 << 2;
-        /// Device maximum MTU reporting is supported.
-        ///
-        /// If offered by the device, device advises driver about the value of
-        /// its maximum MTU. If negotiated, the driver uses mtu as the maximum
-        /// MTU value.
-        const MTU = 1 << 3;
-        /// Device has given MAC address.
-        const MAC = 1 << 5;
-        /// Device handles packets with any GSO type. (legacy)
-        const GSO = 1 << 6;
-        /// Driver can receive TSOv4.
-        const GUEST_TSO4 = 1 << 7;
-        /// Driver can receive TSOv6.
-        const GUEST_TSO6 = 1 << 8;
-        /// Driver can receive TSO with ECN.
-        const GUEST_ECN = 1 << 9;
-        /// Driver can receive UFO.
-        const GUEST_UFO = 1 << 10;
-        /// Device can receive TSOv4.
-        const HOST_TSO4 = 1 << 11;
-        /// Device can receive TSOv6.
-        const HOST_TSO6 = 1 << 12;
-        /// Device can receive TSO with ECN.
-        const HOST_ECN = 1 << 13;
-        /// Device can receive UFO.
-        const HOST_UFO = 1 << 14;
-        /// Driver can merge receive buffers.
-        const MRG_RXBUF = 1 << 15;
-        /// Configuration status field is available.
-        const STATUS = 1 << 16;
-        /// Control channel is available.
-        const CTRL_VQ = 1 << 17;
-        /// Control channel RX mode support.
-        const CTRL_RX = 1 << 18;
-        /// Control channel VLAN filtering.
-        const CTRL_VLAN = 1 << 19;
-        ///
-        const CTRL_RX_EXTRA = 1 << 20;
-        /// Driver can send gratuitous packets.
-        const GUEST_ANNOUNCE = 1 << 21;
-        /// Device supports multiqueue with automatic receive steering.
-        const MQ = 1 << 22;
-        /// Set MAC address through control channel.
-        const CTL_MAC_ADDR = 1 << 23;
-
-        // device independent
-        const RING_INDIRECT_DESC = 1 << 28;
-        const RING_EVENT_IDX = 1 << 29;
-        const VERSION_1 = 1 << 32; // legacy
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-    struct Status: u16 {
-        const LINK_UP = 1;
-        const ANNOUNCE = 2;
-    }
-}
-
-bitflags! {
-    #[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-    struct InterruptStatus : u32 {
-        const USED_RING_UPDATE = 1 << 0;
-        const CONFIGURATION_CHANGE = 1 << 1;
-    }
-}
-
-#[repr(C)]
-#[derive(Debug, Default)]
-struct NetConfig {
-    mac: ReadOnly<CONFIG_OFFSET, EthernetAddress>,
-    status: ReadOnly<{ CONFIG_OFFSET + 6 }, u16>,
-    max_virtqueue_pairs: ReadOnly<{ CONFIG_OFFSET + 8 }, u16>,
-    mtu: ReadOnly<{ CONFIG_OFFSET + 10 }, u16>,
-}
-
-type EthernetAddress = Array<6, u8>;
-
-/// VirtIO 5.1.6 Device Operation:
+/// Driver for a VirtIO network device.
 ///
-/// Packets are transmitted by placing them in the transmitq1. . .transmitqN,
-/// and buffers for incoming packets are placed in the receiveq1. . .receiveqN.
-/// In each case, the packet itself is preceded by a header.
-#[repr(C)]
-#[derive(Debug, Default)]
-pub struct VirtioNetHdr {
-    flags: Flags,
-    gso_type: GsoType,
-    hdr_len: u16, // cannot rely on this
-    gso_size: u16,
-    csum_start: u16,
-    csum_offset: u16,
-    // num_buffers: u16, // only available when the feature MRG_RXBUF is negotiated.
-    // payload starts from here
+/// Unlike [`VirtIONetRaw`], it uses [`RxBuffer`]s for transmission and
+/// reception rather than the raw slices. On initialization, it pre-allocates
+/// all receive buffers and puts them all in the receive queue.
+///
+/// The virtio network device is a virtual ethernet card.
+///
+/// It has enhanced rapidly and demonstrates clearly how support for new
+/// features are added to an existing device.
+/// Empty buffers are placed in one virtqueue for receiving packets, and
+/// outgoing packets are enqueued into another for transmission in that order.
+/// A third command queue is used to control advanced filtering features.
+pub struct VirtIONet<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> {
+    inner: VirtIONetRaw<H, T, QUEUE_SIZE>,
+    rx_buffers: [Vec<u8>; QUEUE_SIZE],
 }
-impl VirtioNetHdr {
-    fn write_to(&self, target: &mut [u8]) {
-        assert!(target.len() >= size_of::<Self>());
-        target[0] = self.flags.0;
-        target[1] = self.gso_type.0;
-        // (&mut target[2..4]).copy_from_slice(&self.hdr_len.to_le_bytes());
-        // (&mut target[4..6]).copy_from_slice(&self.gso_size.to_le_bytes());
-        // (&mut target[6..8]).copy_from_slice(&self.csum_start.to_le_bytes());
-        // (&mut target[8..10]).copy_from_slice(&self.csum_offset.to_le_bytes());
 
-        target[2] = self.hdr_len as _;
-        target[3] = (self.hdr_len >> 8) as _;
-        target[4] = self.gso_size as _;
-        target[5] = (self.gso_size >> 8) as _;
-        target[6] = self.csum_start as _;
-        target[7] = (self.csum_start >> 8) as _;
-        target[8] = self.csum_offset as _;
-        target[9] = (self.csum_offset >> 8) as _;
+impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONet<H, T, QUEUE_SIZE> {
+    /// Create a new VirtIO-Net driver.
+    pub fn new(transport: T, buf_len: usize) -> VirtIoResult<Self> {
+        let mut inner = VirtIONetRaw::new(transport)?;
+
+        const NONE_BUF: Vec<u8> = Vec::new();
+        let mut rx_buffers = [NONE_BUF; QUEUE_SIZE];
+        for (i, rx_buf) in rx_buffers.iter_mut().enumerate() {
+            rx_buf.resize(buf_len, 0);
+            // Safe because the buffer lives as long as the queue.
+            let token = inner.receive_begin(rx_buf.as_mut())?;
+            assert_eq!(token, i as u16);
+        }
+
+        Ok(VirtIONet { inner, rx_buffers })
+    }
+
+    /// Acknowledge interrupt.
+    pub fn ack_interrupt(&mut self) -> VirtIoResult<bool> {
+        self.inner.ack_interrupt()
+    }
+
+    /// Disable interrupts.
+    // pub fn disable_interrupts(&mut self) -> VirtIoResult<()> {
+    //     self.inner.disable_interrupts()
+    // }
+
+    /// Enable interrupts.
+    // pub fn enable_interrupts(&mut self) -> VirtIoResult<()> {
+    //     self.inner.disable_interrupts()
+    // }
+
+    /// Get MAC address.
+    pub fn mac_address(&self) -> VirtIoResult<[u8; 6]> {
+        self.inner.mac_address()
+    }
+
+    /// Whether can send packet.
+    pub fn can_send(&self) -> VirtIoResult<bool> {
+        self.inner.can_send()
+    }
+
+    /// Whether can receive packet. If can, return (token, packet length).
+    pub fn can_recv(&self) -> VirtIoResult<Option<(u16, usize)>> {
+        self.inner.can_recv()
+    }
+
+    /// Receives a `[u8]` from network and return length. If currently no data, returns an
+    /// error with type [`Error::NotReady`].
+    ///
+    /// It will try to pop a buffer that completed data reception in the
+    /// NIC queue.
+    pub fn receive(&mut self, data: &mut [u8]) -> VirtIoResult<usize> {
+        if let Some((token, _)) = self.inner.can_recv()? {
+            let rx_buf = &self.rx_buffers[token as usize];
+
+            let (hdr_len, pkt_len) = self.inner.receive_complete(token)?;
+            (data[0..pkt_len]).copy_from_slice(&rx_buf[hdr_len..(hdr_len + pkt_len)]);
+            Ok(pkt_len)
+        } else {
+            Err(VirtIoError::NotReady)
+        }
+    }
+
+    /// Sends a [`TxBuffer`] to the network, and blocks until the request
+    /// completed.
+    pub fn send(&mut self, tx_buf: &[u8]) -> VirtIoResult<()> {
+        self.inner.send(tx_buf)
     }
 }
-
-#[derive(Copy, Clone, Debug, Default, Eq, PartialEq)]
-#[repr(transparent)]
-struct Flags(u8);
-
-bitflags! {
-    impl Flags: u8 {
-        const NEEDS_CSUM = 1;
-        const DATA_VALID = 2;
-        const RSC_INFO   = 4;
-    }
-}
-
-#[repr(transparent)]
-#[derive(Debug, Copy, Clone, Default, Eq, PartialEq)]
-struct GsoType(u8);
-
-impl GsoType {
-    const NONE: GsoType = GsoType(0);
-    const TCPV4: GsoType = GsoType(1);
-    const UDP: GsoType = GsoType(3);
-    const TCPV6: GsoType = GsoType(4);
-    const ECN: GsoType = GsoType(0x80);
-}
-
-const QUEUE_RECEIVE: u16 = 0;
-const QUEUE_TRANSMIT: u16 = 1;
-const SUPPORTED_FEATURES: Features = Features::MAC
-    .union(Features::STATUS)
-    .union(Features::RING_EVENT_IDX);

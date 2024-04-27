@@ -47,7 +47,7 @@ clean:
 
 qemu-legacy: kernel $(img)
 # Wait a few seconds, then try to open a connection to the VM so it can test its networking.
-	#( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
+	( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
 	qemu-system-$(arch) \
 	  $(QEMU_ARGS) \
 		-machine virt \
@@ -58,10 +58,10 @@ qemu-legacy: kernel $(img)
 		-device virtio-blk-device,drive=x0 \
 		-device virtio-serial-device,id=virtio-serial0 \
 		-device virtio-gpu-device \
+		-device virtio-net-device,netdev=net0 \
+		-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
 #		-device virtio-mouse-device \
 #		-device virtio-keyboard-device \
-#		-device virtio-net-device,netdev=net0 \
-#		-netdev user,id=net0,hostfwd=tcp::5555-:5555
 
 qemu: kernel $(img)
 # Wait a few seconds, then try to open a connection to the VM so it can test its networking.

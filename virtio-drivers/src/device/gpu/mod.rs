@@ -153,12 +153,12 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOGpu<H, T> {
     /// Send a request to the device and block for a response.
     fn request<Req: Sized, Rsp: Sized>(&mut self, req: Req, rsp: Rsp) -> VirtIoResult<Rsp> {
         // self.queue_buf_send.copy_from_slice(req.as_slice());
-        let req = Descriptor::new(
+        let req = Descriptor::new::<QUEUE_SIZE, H>(
             &req as *const _ as _,
             size_of_val(&req) as _,
             DescFlag::NEXT,
         );
-        let res = Descriptor::new(
+        let res = Descriptor::new::<QUEUE_SIZE, H>(
             &rsp as *const _ as _,
             size_of_val(&rsp) as _,
             DescFlag::WRITE,
@@ -170,7 +170,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOGpu<H, T> {
 
     /// Send a mouse cursor operation request to the device and block for a response.
     fn cursor_request<Req: Sized>(&mut self, req: Req) -> VirtIoResult<()> {
-        let req = Descriptor::new(
+        let req = Descriptor::new::<QUEUE_SIZE, H>(
             &req as *const _ as _,
             size_of_val(&req) as _,
             DescFlag::EMPTY,

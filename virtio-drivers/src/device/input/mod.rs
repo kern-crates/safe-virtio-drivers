@@ -40,7 +40,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
         for (i, event) in event_buf.iter().enumerate() {
             // Safe because the buffer lasts as long as the queue.
             // let token = unsafe { event_queue.add(&[], &mut [event.as_bytes_mut()])? };
-            let token = event_queue.add(vec![Descriptor::new(
+            let token = event_queue.add(vec![Descriptor::new::<QUEUE_SIZE, H>(
                 event as *const InputEvent as _,
                 size_of::<InputEvent>() as _,
                 DescFlag::WRITE,
@@ -68,10 +68,10 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOInput<H, T> {
 
     /// Pop the pending event.
     pub fn pop_pending_event(&mut self) -> VirtIoResult<Option<InputEvent>> {
-        if let Some(token) = self.event_queue.peek_used()? {
+        if let Some(token) = self.event_queue.peek_used() {
             let _ = self.event_queue.pop_used(token)?;
             let event_saved = self.event_buf[token as usize];
-            let new_token = self.event_queue.add(vec![Descriptor::new(
+            let new_token = self.event_queue.add(vec![Descriptor::new::<QUEUE_SIZE, H>(
                 &self.event_buf[token as usize] as *const InputEvent as _,
                 size_of::<InputEvent>() as _,
                 DescFlag::WRITE,
@@ -109,7 +109,11 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> Drop for VirtIOInput<H, T> {
     fn drop(&mut self) {
         // Clear any pointers pointing to DMA regions, so the device doesn't try to access them
         // after they have been freed.
-        self.transport.queue_unset(QUEUE_EVENT).expect("failed to unset event queue");
-        self.transport.queue_unset(QUEUE_STATUS).expect("failed to unset status queue");
+        self.transport
+            .queue_unset(QUEUE_EVENT)
+            .expect("failed to unset event queue");
+        self.transport
+            .queue_unset(QUEUE_STATUS)
+            .expect("failed to unset status queue");
     }
 }

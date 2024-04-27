@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::hint::spin_loop;
 use core::marker::PhantomData;
 use core::mem::size_of;
-use core::sync::atomic::{AtomicU16, fence, Ordering};
+use core::sync::atomic::{fence, AtomicU16, Ordering};
 
 pub struct VirtIoQueue<H: Hal<SIZE>, const SIZE: usize> {
     queue_page: Box<dyn QueuePage<SIZE>>,
@@ -158,13 +158,18 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     }
     /// Returns the descriptor index (a.k.a. token) of the next used element without popping it, or
     /// `None` if the used ring is empty.
-    pub(crate) fn peek_used(&self) -> VirtIoResult<Option<u16>> {
+    pub(crate) fn peek_used(&self) -> Option<u16> {
         let used_ring = &self.queue_ref.used_ring;
         if self.last_seen_used == used_ring.idx.load(Ordering::Acquire) {
-            return Ok(None);
+            return None;
         }
         let id = used_ring.ring[self.last_seen_used as usize % SIZE].id;
-        Ok(Some(id as _))
+        Some(id as _)
+    }
+
+    pub fn get_desc_len(&self, id: u16) -> usize {
+        let descs = &self.queue_ref.descriptor_table;
+        descs[id as usize].len as _
     }
 
     /// Returns the number of free descriptors.
@@ -228,25 +233,25 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
     }
 }
 
-
-pub struct QueueLayout{
+pub struct QueueLayout {
     pub descriptor_table_offset: usize,
     pub avail_ring_offset: usize,
     pub used_ring_offset: usize,
 }
 
-impl QueueLayout{
-    pub fn new<const SIZE:usize>()->Self{
-        Self{
+impl QueueLayout {
+    pub fn new<const SIZE: usize>() -> Self {
+        Self {
             descriptor_table_offset: 0,
             avail_ring_offset: size_of::<Descriptor>() * SIZE,
-            used_ring_offset: align_up(size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>()),
+            used_ring_offset: align_up(
+                size_of::<Descriptor>() * SIZE + size_of::<AvailRing<SIZE>>(),
+            ),
         }
     }
 }
 
-
-pub struct QueueMutRef<const SIZE:usize>{
+pub struct QueueMutRef<const SIZE: usize> {
     pub descriptor_table: &'static mut [Descriptor],
     pub avail_ring: &'static mut AvailRing<SIZE>,
     pub used_ring: &'static mut UsedRing<SIZE>,
@@ -271,9 +276,9 @@ impl Default for Descriptor {
     }
 }
 impl Descriptor {
-    pub(crate) fn new(addr: u64, len: u32, flags: u16) -> Self {
+    pub(crate) fn new<const SIZE: usize, H: Hal<SIZE>>(vaddr: usize, len: u32, flags: u16) -> Self {
         Self {
-            addr,
+            addr: H::to_paddr(vaddr) as _,
             len,
             flags,
             next: 0,
@@ -301,7 +306,7 @@ impl<const SIZE: usize> AvailRing<SIZE> {
     fn push(&mut self, id: u16) -> VirtIoResult<u16> {
         // have enough space, because (avail ring's len == desc's)
         let res = self.idx.load(Ordering::Acquire);
-        self.ring[res as  usize % SIZE] = id;
+        self.ring[res as usize % SIZE] = id;
         self.idx.store(res.wrapping_add(1), Ordering::Release);
         Ok(res)
     }

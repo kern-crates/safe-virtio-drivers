@@ -1,14 +1,11 @@
-use core::arch::x86_64::__m256;
-use core::mem::size_of;
-
-use super::{EthernetAddress, Features, NetConfig, VirtioNetHdr};
-use super::{MIN_BUFFER_LEN, NET_HDR_SIZE, QUEUE_RECEIVE, QUEUE_TRANSMIT, SUPPORTED_FEATURES};
+use super::ty::*;
 use crate::error::{VirtIoError, VirtIoResult};
 use crate::hal::Hal;
 use crate::queue::{DescFlag, Descriptor, VirtIoQueue};
 use crate::transport::Transport;
 use crate::volatile::ReadVolatile;
 use alloc::vec;
+use core::mem::size_of;
 use log::{debug, info, warn};
 
 /// Raw driver for a VirtIO block device.
@@ -41,10 +38,11 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
             mac,
             config.status.read(io_region)
         );
+
         let recv_queue = VirtIoQueue::new(&mut transport, QUEUE_RECEIVE)?;
         let send_queue = VirtIoQueue::new(&mut transport, QUEUE_TRANSMIT)?;
 
-        transport.finish_init();
+        transport.finish_init()?;
 
         Ok(VirtIONetRaw {
             transport,
@@ -77,8 +75,17 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
     }
 
     /// Whether can send packet.
-    pub fn can_send(&self) -> bool {
-        self.send_queue.available_desc() >= 2
+    pub fn can_send(&self) -> VirtIoResult<bool> {
+        Ok(self.send_queue.available_desc() >= 2)
+    }
+    /// Whether can receive packet. If can, return (token, packet length).
+    pub fn can_recv(&self) -> VirtIoResult<Option<(u16, usize)>> {
+        let token = self.recv_queue.peek_used();
+        if let None = token {
+            return Ok(None);
+        }
+        let token = token.unwrap();
+        Ok(Some((token, self.recv_queue.get_desc_len(token))))
     }
 
     /// Whether the length of the receive buffer is valid.
@@ -91,13 +98,16 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
         }
     }
 
-    /// Whether the length of the transmit buffer is valid.
-    fn check_tx_buf_len(tx_buf: &[u8]) -> VirtIoResult<()> {
+    /// Whether the header of the transmit buffer is correct.
+    fn check_tx_buf_header(tx_buf: &[u8]) -> VirtIoResult<()> {
         if tx_buf.len() < NET_HDR_SIZE {
             warn!("Transmit buffer len {} is too small", tx_buf.len());
-            Err(VirtIoError::InvalidParam)
-        } else {
+            return Err(VirtIoError::InvalidParam);
+        }
+        if VirtioNetHdr::default().equal(tx_buf)? {
             Ok(())
+        } else {
+            Err(VirtIoError::InvalidParam)
         }
     }
 
@@ -137,11 +147,15 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
     /// [`poll_transmit`]: Self::poll_transmit
     /// [`transmit_complete`]: Self::transmit_complete
     pub fn transmit_begin(&mut self, tx_buf: &[u8]) -> VirtIoResult<u16> {
-        Self::check_tx_buf_len(tx_buf)?;
-        let desc = Descriptor::new(tx_buf.as_ptr() as _, tx_buf.len() as _, DescFlag::EMPTY);
+        Self::check_tx_buf_header(tx_buf)?;
+        let desc = Descriptor::new::<QUEUE_SIZE, H>(
+            tx_buf.as_ptr() as _,
+            tx_buf.len() as _,
+            DescFlag::EMPTY,
+        );
         let token = self.send_queue.add(vec![desc])?;
         if self.send_queue.should_notify() {
-            self.transport.notify(QUEUE_TRANSMIT);
+            self.transport.notify(QUEUE_TRANSMIT)?;
         }
         Ok(token)
     }
@@ -191,10 +205,14 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
     /// [`receive_complete`]: Self::receive_complete
     pub fn receive_begin(&mut self, rx_buf: &mut [u8]) -> VirtIoResult<u16> {
         Self::check_rx_buf_len(rx_buf)?;
-        let desc = Descriptor::new(rx_buf.as_ptr() as _, rx_buf.len() as _, DescFlag::WRITE);
+        let desc = Descriptor::new::<QUEUE_SIZE, H>(
+            rx_buf.as_ptr() as _,
+            rx_buf.len() as _,
+            DescFlag::WRITE,
+        );
         let token = self.recv_queue.add(vec![desc])?;
         if self.recv_queue.should_notify() {
-            self.transport.notify(QUEUE_RECEIVE);
+            self.transport.notify(QUEUE_RECEIVE)?;
         }
         Ok(token)
     }
@@ -229,7 +247,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
         let mut header_buf = [0u8; size_of::<VirtioNetHdr>()];
         VirtioNetHdr::default().write_to(&mut header_buf);
 
-        let header_desc = Descriptor::new(
+        let header_desc = Descriptor::new::<QUEUE_SIZE, H>(
             header_buf.as_ptr() as _,
             header_buf.len() as _,
             if tx_buf.is_empty() {
@@ -242,7 +260,11 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
         if !tx_buf.is_empty() {
             // Special case sending an empty packet, to avoid adding an empty buffer to the
             // virtqueue.
-            let desc = Descriptor::new(tx_buf.as_ptr() as _, tx_buf.len() as _, DescFlag::EMPTY);
+            let desc = Descriptor::new::<QUEUE_SIZE, H>(
+                tx_buf.as_ptr() as _,
+                tx_buf.len() as _,
+                DescFlag::EMPTY,
+            );
             v = vec![header_desc, desc];
         } else {
             v = vec![header_desc];
@@ -253,6 +275,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONetRaw<H, 
     }
 
     /// Blocks and waits for a packet to be received.
+    /// Don't use this function while other buffers are already in receive queue.
     ///
     /// After completion, the `rx_buf` will contain a header followed by the
     /// received packet. It returns the length of the header and the length of

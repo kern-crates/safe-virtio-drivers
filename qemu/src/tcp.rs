@@ -4,17 +4,24 @@
 
 use alloc::{borrow::ToOwned, rc::Rc, vec, vec::Vec};
 use core::{cell::RefCell, str::FromStr};
+use safe_virtio_drivers::error::VirtIoError;
 
 use smoltcp::iface::{Config, Interface, SocketSet};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::wire::{EthernetAddress, IpAddress, IpCidr, Ipv4Address};
 use smoltcp::{socket::tcp, time::Instant};
-use virtio_drivers::device::net::{RxBuffer, VirtIONet};
-use virtio_drivers::{transport::Transport, Error};
+
+const NET_BUFFER_LEN: usize = 2048;
+
+// use virtio_drivers::device::net::{RxBuffer, VirtIONet};
+// use virtio_drivers::{transport::Transport, Error};
+
+use crate::my_impl::MyHalImpl;
+use safe_virtio_drivers::transport::Transport;
 
 use super::{HalImpl, NET_QUEUE_SIZE};
 
-type DeviceImpl<T> = VirtIONet<HalImpl, T, NET_QUEUE_SIZE>;
+type DeviceImpl<T> = safe_virtio_drivers::device::net::VirtIONet<MyHalImpl, T, NET_QUEUE_SIZE>;
 
 const IP: &str = "10.0.2.15"; // QEMU user networking default IP
 const GATEWAY: &str = "10.0.2.2"; // QEMU user networking gateway
@@ -32,7 +39,12 @@ impl<T: Transport> DeviceWrapper<T> {
     }
 
     fn mac_address(&self) -> EthernetAddress {
-        EthernetAddress(self.inner.borrow().mac_address())
+        EthernetAddress(
+            self.inner
+                .borrow()
+                .mac_address()
+                .expect("get mac addr failed"),
+        )
     }
 }
 
@@ -41,12 +53,16 @@ impl<T: Transport> Device for DeviceWrapper<T> {
     type TxToken<'a> = VirtioTxToken<T> where Self: 'a;
 
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        match self.inner.borrow_mut().receive() {
-            Ok(buf) => Some((
-                VirtioRxToken(self.inner.clone(), buf),
-                VirtioTxToken(self.inner.clone()),
-            )),
-            Err(Error::NotReady) => None,
+        let mut v = vec![0u8; NET_BUFFER_LEN];
+        match self.inner.borrow_mut().receive(&mut v) {
+            Ok(len) => {
+                v.resize(len, 0);
+                Some((
+                    VirtioRxToken(self.inner.clone(), v),
+                    VirtioTxToken(self.inner.clone()),
+                ))
+            }
+            Err(VirtIoError::NotReady) => None,
             Err(err) => panic!("receive failed: {}", err),
         }
     }
@@ -64,7 +80,7 @@ impl<T: Transport> Device for DeviceWrapper<T> {
     }
 }
 
-struct VirtioRxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>, RxBuffer);
+struct VirtioRxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>, Vec<u8>);
 struct VirtioTxToken<T: Transport>(Rc<RefCell<DeviceImpl<T>>>);
 
 impl<T: Transport> RxToken for VirtioRxToken<T> {
@@ -73,13 +89,9 @@ impl<T: Transport> RxToken for VirtioRxToken<T> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut rx_buf = self.1;
-        trace!(
-            "RECV {} bytes: {:02X?}",
-            rx_buf.packet_len(),
-            rx_buf.packet()
-        );
-        let result = f(rx_buf.packet_mut());
-        self.0.borrow_mut().recycle_rx_buffer(rx_buf).unwrap();
+        trace!("RECV {} bytes: {:02X?}", rx_buf.len(), rx_buf);
+        let result = f(&mut rx_buf);
+        // self.0.borrow_mut().recycle_rx_buffer(rx_buf).unwrap();
         result
     }
 }
@@ -90,10 +102,11 @@ impl<T: Transport> TxToken for VirtioTxToken<T> {
         F: FnOnce(&mut [u8]) -> R,
     {
         let mut dev = self.0.borrow_mut();
-        let mut tx_buf = dev.new_tx_buffer(len);
-        let result = f(tx_buf.packet_mut());
-        trace!("SEND {} bytes: {:02X?}", len, tx_buf.packet());
-        dev.send(tx_buf).unwrap();
+        // let mut tx_buf = dev.new_tx_buffer(len);
+        let mut tx_buf = vec![0u8; len];
+        let result = f(&mut tx_buf);
+        trace!("SEND {} bytes: {:02X?}", len, tx_buf);
+        dev.send(&tx_buf).unwrap();
         result
     }
 }

@@ -96,16 +96,16 @@ fn virtio_probe(node: FdtNode) {
 
 fn virtio_device(transport: impl Transport, vaddr: usize, size: usize) {
     match transport.device_type() {
-        DeviceType::Block => virtio_blk(transport, vaddr, size),
-        DeviceType::Input => virtio_input(transport, vaddr, size),
-        DeviceType::Console => virtio_console(transport, vaddr, size),
-        DeviceType::GPU => virtio_gpu(transport, vaddr, size),
-        // DeviceType::Network => virtio_net(transport),
+        DeviceType::Block => virtio_blk(vaddr, size),
+        DeviceType::Input => virtio_input(vaddr, size),
+        DeviceType::Console => virtio_console(vaddr, size),
+        DeviceType::GPU => virtio_gpu(vaddr, size),
+        DeviceType::Network => virtio_net(vaddr, size),
         t => warn!("Unrecognized virtio device: {:?}", t),
     }
 }
 type MyTransport = safe_virtio_drivers::transport::mmio::MmioTransport;
-fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
+fn virtio_blk(vaddr: usize, size: usize) {
     // let mut blk = VirtIOBlk::<HalImpl, T>::new(transport).expect("failed to create blk driver");
     let io_region = SafeIoRegion::new(vaddr, size);
     //
@@ -131,7 +131,7 @@ fn virtio_blk<T: Transport>(transport: T, vaddr: usize, size: usize) {
     info!("virtio-blk test finished");
 }
 
-fn virtio_gpu<T: Transport>(transport: T, vaddr: usize, size: usize) {
+fn virtio_gpu(vaddr: usize, size: usize) {
     // let mut gpu = VirtIOGpu::<HalImpl, T>::new(transport).expect("failed to create gpu driver");
     let io_region = SafeIoRegion::new(vaddr, size);
     let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
@@ -164,7 +164,7 @@ fn virtio_gpu<T: Transport>(transport: T, vaddr: usize, size: usize) {
     info!("virtio-gpu test finished");
 }
 
-fn virtio_input<T: Transport>(transport: T, va: usize, size: usize) {
+fn virtio_input(va: usize, size: usize) {
     //let mut event_buf = [0u64; 32];
     // let mut _input =
     //     VirtIOInput::<HalImpl, T>::new(transport).expect("failed to create input driver");
@@ -187,7 +187,7 @@ fn virtio_input<T: Transport>(transport: T, va: usize, size: usize) {
     // TODO: handle external interrupt
 }
 
-fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
+fn virtio_console(vaddr: usize, size: usize) {
     // let mut console = VirtIOConsole::<HalImpl, _>::new(transport).unwrap();
     let io_region = SafeIoRegion::new(vaddr, size);
     let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
@@ -207,12 +207,17 @@ fn virtio_console<T: Transport>(transport: T, vaddr: usize, size: usize) {
     println!("Read {:?} from console.", c)
 }
 
-fn virtio_net<T: Transport>(transport: T) {
+fn virtio_net(vaddr: usize, size: usize) {
+    let io_region = SafeIoRegion::new(vaddr, size);
+    let transport = MyTransport::new(Box::new(io_region)).expect("failed to create transport");
     #[cfg(not(feature = "tcp"))]
     {
-        let mut net =
-            virtio_drivers::device::net::VirtIONetRaw::<HalImpl, T, NET_QUEUE_SIZE>::new(transport)
-                .expect("failed to create net driver");
+        let mut net = safe_virtio_drivers::device::net::VirtIONetRaw::<
+            MyHalImpl,
+            MyTransport,
+            NET_QUEUE_SIZE,
+        >::new(transport)
+        .expect("failed to create net driver");
         info!("MAC address: {:02x?}", net.mac_address());
 
         let mut buf = [0u8; 2048];
@@ -229,10 +234,11 @@ fn virtio_net<T: Transport>(transport: T) {
     #[cfg(feature = "tcp")]
     {
         const NET_BUFFER_LEN: usize = 2048;
-        let net = virtio_drivers::device::net::VirtIONet::<HalImpl, T, NET_QUEUE_SIZE>::new(
-            transport,
-            NET_BUFFER_LEN,
-        )
+        let net = safe_virtio_drivers::device::net::VirtIONet::<
+            MyHalImpl,
+            MyTransport,
+            NET_QUEUE_SIZE,
+        >::new(transport, NET_BUFFER_LEN)
         .expect("failed to create net driver");
         info!("MAC address: {:02x?}", net.mac_address());
         tcp::test_echo_server(net);

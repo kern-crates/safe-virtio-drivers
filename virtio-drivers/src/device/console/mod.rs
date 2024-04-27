@@ -69,7 +69,7 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOConsole<H, T> {
             info!("poll_retrieve");
             // Safe because the buffer lasts at least as long as the queue, and there are no other
             // outstanding requests using the buffer.
-            let req = Descriptor::new(
+            let req = Descriptor::new::<QUEUE_SIZE, H>(
                 self.queue_buf_rx.as_ptr() as _,
                 self.queue_buf_rx.len() as _,
                 DescFlag::WRITE,
@@ -94,12 +94,12 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOConsole<H, T> {
     fn finish_receive(&mut self) -> VirtIoResult<bool> {
         let mut flag = false;
         if let Some(receive_token) = self.receive_token {
-            let peek_used = self.receiveq.peek_used()?;
+            let peek_used = self.receiveq.peek_used();
             info!(
                 "finish_receive: receive_token: {:?}, peek_used: {:?}",
                 receive_token, peek_used
             );
-            if self.receive_token == self.receiveq.peek_used()? {
+            if self.receive_token == self.receiveq.peek_used() {
                 let len = self.receiveq.pop_used(receive_token)?;
                 flag = true;
                 assert_ne!(len, 0);
@@ -146,7 +146,8 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport> VirtIOConsole<H, T> {
     /// Sends a character to the console.
     pub fn send(&mut self, chr: u8) -> VirtIoResult<()> {
         let buf: [u8; 1] = [chr];
-        let desc = Descriptor::new(buf.as_ptr() as _, buf.len() as _, DescFlag::EMPTY);
+        let desc =
+            Descriptor::new::<QUEUE_SIZE, H>(buf.as_ptr() as _, buf.len() as _, DescFlag::EMPTY);
         self.transmitq
             .add_notify_wait_pop(&mut self.transport, vec![desc])?;
         info!("send char: {:?}", chr as char);
