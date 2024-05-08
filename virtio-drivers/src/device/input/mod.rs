@@ -13,7 +13,8 @@ use ty::*;
 
 const QUEUE_EVENT: u16 = 0;
 const QUEUE_STATUS: u16 = 1;
-const SUPPORTED_FEATURES: InputFeature = InputFeature::RING_EVENT_IDX;
+const SUPPORTED_FEATURES: InputFeature = InputFeature::empty(); // InputFeature::RING_EVENT_IDX;
+
 // a parameter that can change
 const QUEUE_SIZE: usize = 32;
 

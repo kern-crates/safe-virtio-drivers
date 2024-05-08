@@ -12,7 +12,7 @@ use log::info;
 use ty::*;
 
 const QUEUE_SIZE: usize = 2;
-const SUPPORTED_FEATURES: Features = Features::RING_EVENT_IDX;
+const SUPPORTED_FEATURES: Features = Features::empty(); // Features::RING_EVENT_IDX;
 
 /// A virtio based graphics adapter.
 ///
