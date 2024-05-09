@@ -84,10 +84,12 @@ impl<H: Hal<QUEUE_SIZE>, T: Transport, const QUEUE_SIZE: usize> VirtIONet<H, T, 
     /// NIC queue.
     pub fn receive(&mut self, data: &mut [u8]) -> VirtIoResult<usize> {
         if let Some((token, _)) = self.inner.can_recv()? {
-            let rx_buf = &self.rx_buffers[token as usize];
+            let rx_buf = &mut self.rx_buffers[token as usize];
 
             let (hdr_len, pkt_len) = self.inner.receive_complete(token)?;
             (data[0..pkt_len]).copy_from_slice(&rx_buf[hdr_len..(hdr_len + pkt_len)]);
+            let new_token = self.inner.receive_begin(rx_buf)?;
+            assert_eq!(new_token, token);
             Ok(pkt_len)
         } else {
             Err(VirtIoError::NotReady)
