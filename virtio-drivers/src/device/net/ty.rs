@@ -178,6 +178,5 @@ impl GsoType {
 
 pub const QUEUE_RECEIVE: u16 = 0;
 pub const QUEUE_TRANSMIT: u16 = 1;
-pub const SUPPORTED_FEATURES: Features = Features::MAC
-    .union(Features::STATUS)
-    .union(Features::RING_EVENT_IDX);
+pub const SUPPORTED_FEATURES: Features = Features::MAC.union(Features::STATUS);
+// .union(Features::RING_EVENT_IDX);
