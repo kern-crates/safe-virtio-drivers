@@ -7,6 +7,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use fdt::node::FdtNode;
@@ -24,7 +25,7 @@ use virtio_drivers::transport::{DeviceType, Transport};
 static BLK: Once<Arc<Mutex<VirtIOBlk<MyHalImpl, MmioTransport>>>> = Once::new();
 static CONSOLE: Once<Arc<Mutex<VirtIOConsole<MyHalImpl, MmioTransport>>>> = Once::new();
 static GPU: Once<Arc<Mutex<VirtIOGpu<MyHalImpl, MmioTransport>>>> = Once::new();
-static INPUT: Once<Arc<Mutex<VirtIOInput<MyHalImpl, MmioTransport>>>> = Once::new();
+static INPUTS: Mutex<Vec<Arc<Mutex<VirtIOInput<MyHalImpl, MmioTransport>>>>> = Mutex::new(vec![]);
 static NET: Once<Arc<Mutex<VirtIONet<MyHalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }>>>> =
     Once::new();
 static NET_RAW: Once<
@@ -97,7 +98,8 @@ fn virtio_device(transport: MmioTransport, irq: usize) {
                 .expect("input driver create failed");
             let input = Arc::new(Mutex::new(input));
             // register_device_to_plic(irq,input.clone());
-            INPUT.call_once(|| input);
+            let mut inputs = INPUTS.lock();
+            inputs.push(input.clone());
         }
         DeviceType::Console => {
             let mut console = VirtIOConsole::<HalImpl, MmioTransport>::new(transport)
@@ -187,15 +189,19 @@ fn virtio_gpu() {
 }
 
 fn virtio_input() {
-    let mut input = INPUT.get().unwrap().lock();
+    let mut inputs = INPUTS.lock();
     let mut event_buf = [0u64; 32];
     info!("testing input... Press ESC or right-click to continue.");
-    loop {
-        input.ack_interrupt();
-        if let Some(e) = input.pop_pending_event() {
-            info!("input: {:?}", e);
-            if e.event_type == 1 && (e.code == 1 || e.code == 273) && e.value == 0 {
-                break;
+    'outer: loop {
+        for input in inputs.iter() {
+            let mut input = input.lock();
+            input.ack_interrupt();
+            if let Some(e) = input.pop_pending_event() {
+                info!("input: {:?}", e);
+                if e.event_type == 1 && (e.code == 1 || e.code == 273) && e.value == 0 {
+                    println!("ESC or right-click pressed, exit input test.");
+                    break 'outer;
+                }
             }
         }
     }

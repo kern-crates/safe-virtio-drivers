@@ -228,7 +228,10 @@ impl<H: Hal<SIZE>, const SIZE: usize> VirtIoQueue<H, SIZE> {
         while self.poped_used.contains(&self.last_seen_used) {
             self.poped_used.remove(&self.last_seen_used);
             self.last_seen_used = self.last_seen_used.wrapping_add(1);
-            // self.queue_ref.avail_ring.used_event.store(self.last_seen_used, Ordering::Release);
+            self.queue_ref
+                .avail_ring
+                .used_event
+                .store(self.last_seen_used, Ordering::Release);
         }
         Ok(len)
     }
