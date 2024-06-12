@@ -222,7 +222,10 @@ fn virtio_net() {
     unsafe {
         let mut net = NET_RAW.get().unwrap();
         info!("MAC address: {:02x?}", net.lock().mac_address());
-        let token = {
+
+        let mut t_token = 0;
+
+        t_token = {
             let mut buf = Box::new([0u8; 2048]);
             let mut net_buf = NET_BUF.lock();
             let token = net
@@ -235,8 +238,8 @@ fn virtio_net() {
         loop {
             if PACKAGE_IN.load(Ordering::Relaxed) {
                 PACKAGE_IN.store(false, Ordering::Relaxed);
-                let buf = NET_BUF.lock().remove(&token).unwrap();
-                let (hdr_len, pkt_len) = NET_RES.lock().remove(&token).unwrap();
+                let mut buf = NET_BUF.lock().remove(&t_token).unwrap();
+                let (hdr_len, pkt_len) = NET_RES.lock().remove(&t_token).unwrap();
                 info!(
                     "recv {} bytes: {:02x?}",
                     pkt_len,
@@ -245,7 +248,24 @@ fn virtio_net() {
                 net.lock()
                     .send(&buf[..hdr_len + pkt_len])
                     .expect("failed to send");
-                break;
+
+                println!("send back {} bytes", hdr_len + pkt_len);
+                let token = {
+                    let mut net_buf = NET_BUF.lock();
+                    let token = net
+                        .lock()
+                        .receive_begin(buf.as_mut())
+                        .expect("failed to recv");
+                    net_buf.insert(token, buf);
+                    token
+                };
+                println!("new token: {}", token);
+                t_token = token;
+            } else {
+                println!("no package in");
+                unsafe {
+                    core::arch::asm!("wfi");
+                }
             }
         }
         info!("virtio-net test finished");
@@ -295,14 +315,17 @@ impl DeviceBase for VirtIONet<HalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }>
 impl DeviceBase for VirtIONetRaw<HalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }> {
     fn handle_irq(&mut self) {
         warn!("virtio-net interrupt");
-        let in_token = self.poll_receive().unwrap();
-        // assert_eq!(in_token, token);
-        let mut buf = NET_BUF.lock();
-        let buf = buf.get_mut(&in_token).unwrap();
-        let (hdr_len, pkt_len) =
-            unsafe { self.receive_complete(in_token, buf.as_mut_slice()) }.expect("failed to recv");
-        PACKAGE_IN.store(true, Ordering::Relaxed);
-        NET_RES.lock().insert(in_token, (hdr_len, pkt_len));
+        let in_token = self.poll_receive();
+        if let Some(in_token) = in_token {
+            // assert_eq!(in_token, token);
+            warn!("find token: {}", in_token);
+            let mut buf = NET_BUF.lock();
+            let buf = buf.get_mut(&in_token).unwrap();
+            let (hdr_len, pkt_len) = unsafe { self.receive_complete(in_token, buf.as_mut_slice()) }
+                .expect("failed to recv");
+            PACKAGE_IN.store(true, Ordering::Relaxed);
+            NET_RES.lock().insert(in_token, (hdr_len, pkt_len));
+        }
         self.ack_interrupt();
     }
 }

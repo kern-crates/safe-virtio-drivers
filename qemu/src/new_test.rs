@@ -5,6 +5,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use fdt::node::FdtNode;
@@ -23,7 +24,7 @@ use spin::Once;
 static BLK: Once<Arc<Mutex<VirtIOBlk<MyHalImpl, MmioTransport>>>> = Once::new();
 static CONSOLE: Once<Arc<Mutex<VirtIOConsole<MyHalImpl, MmioTransport>>>> = Once::new();
 static GPU: Once<Arc<Mutex<VirtIOGpu<MyHalImpl, MmioTransport>>>> = Once::new();
-static INPUT: Once<Arc<Mutex<VirtIOInput<MyHalImpl, MmioTransport>>>> = Once::new();
+static INPUTS: Mutex<Vec<Arc<Mutex<VirtIOInput<MyHalImpl, MmioTransport>>>>> = Mutex::new(vec![]);
 static NET: Once<Arc<Mutex<VirtIONet<MyHalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }>>>> =
     Once::new();
 static NET_RAW: Once<
@@ -105,7 +106,8 @@ fn virtio_device(transport: MmioTransport, irq: usize) {
                 .expect("input driver create failed");
             let input = Arc::new(Mutex::new(input));
             // register_device_to_plic(irq,input.clone());
-            INPUT.call_once(|| input);
+            let mut inputs = INPUTS.lock();
+            inputs.push(input.clone());
         }
         DeviceType::Console => {
             let mut console = VirtIOConsole::<MyHalImpl, MmioTransport>::new(transport)
@@ -194,15 +196,18 @@ fn virtio_gpu() {
 }
 
 fn virtio_input() {
-    let mut input = INPUT.get().unwrap().lock();
+    let mut inputs = INPUTS.lock();
     info!("testing input... Press ESC or right-click to continue.");
-    loop {
-        input.ack_interrupt().expect("fail to ack");
-        if let Some(e) = input.pop_pending_event().expect("pop failed") {
-            info!("input: {:?}", e);
-            if e.event_type == 1 && (e.code == 1 || e.code == 273) && e.value == 0 {
-                println!("ESC or right-click pressed, exit input test.");
-                break;
+    'outer: loop {
+        for input in inputs.iter() {
+            let mut input = input.lock();
+            input.ack_interrupt().expect("fail to ack");
+            if let Some(e) = input.pop_pending_event().expect("pop failed") {
+                info!("input: {:?}", e);
+                if e.event_type == 1 && (e.code == 1 || e.code == 273) && e.value == 0 {
+                    println!("ESC or right-click pressed, exit input test.");
+                    break 'outer;
+                }
             }
         }
     }
@@ -231,7 +236,10 @@ fn virtio_net() {
     unsafe {
         let mut net = NET_RAW.get().unwrap();
         info!("MAC address: {:02x?}", net.lock().mac_address());
-        let token = {
+
+        let mut t_token = 0;
+
+        t_token = {
             let mut buf = Box::new([0u8; 2048]);
             let mut net_buf = NET_BUF.lock();
             let token = net
@@ -244,8 +252,8 @@ fn virtio_net() {
         loop {
             if PACKAGE_IN.load(Ordering::Relaxed) {
                 PACKAGE_IN.store(false, Ordering::Relaxed);
-                let buf = NET_BUF.lock().remove(&token).unwrap();
-                let (hdr_len, pkt_len) = NET_RES.lock().remove(&token).unwrap();
+                let mut buf = NET_BUF.lock().remove(&t_token).unwrap();
+                let (hdr_len, pkt_len) = NET_RES.lock().remove(&t_token).unwrap();
                 info!(
                     "recv {} bytes: {:02x?}",
                     pkt_len,
@@ -254,7 +262,24 @@ fn virtio_net() {
                 net.lock()
                     .send(&buf[..hdr_len + pkt_len])
                     .expect("failed to send");
-                break;
+
+                println!("send back {} bytes", hdr_len + pkt_len);
+                let token = {
+                    let mut net_buf = NET_BUF.lock();
+                    let token = net
+                        .lock()
+                        .receive_begin(buf.as_mut())
+                        .expect("failed to recv");
+                    net_buf.insert(token, buf);
+                    token
+                };
+                println!("new token: {}", token);
+                t_token = token;
+            } else {
+                println!("no package in");
+                unsafe {
+                    core::arch::asm!("wfi");
+                }
             }
         }
         info!("virtio-net test finished");
@@ -295,7 +320,7 @@ impl DeviceBase for VirtIOInput<MyHalImpl, MmioTransport> {
 
 impl DeviceBase for VirtIONet<MyHalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }> {
     fn handle_irq(&mut self) {
-        warn!("virtio-net interrupt");
+        warn!("<VirtIONet> interrupt");
         PACKAGE_IN.store(true, Ordering::Relaxed);
         self.ack_interrupt();
     }
@@ -303,19 +328,20 @@ impl DeviceBase for VirtIONet<MyHalImpl, MmioTransport, { crate::NET_QUEUE_SIZE 
 
 impl DeviceBase for VirtIONetRaw<MyHalImpl, MmioTransport, { crate::NET_QUEUE_SIZE }> {
     fn handle_irq(&mut self) {
-        warn!("virtio-net interrupt");
+        warn!("<VirtIONetRaw> interrupt");
         // assert_eq!(in_token, token);
         let mut buf = NET_BUF.lock();
         for (token, buf) in buf.iter_mut() {
             let in_token = self.poll_receive(*token).unwrap();
             if in_token {
-                let (hdr_len, pkt_len) =
-                    unsafe { self.receive_complete(*token) }.expect("failed to recv");
+                warn!("find token: {}", token);
+                let (hdr_len, pkt_len) = self.receive_complete(*token).expect("failed to recv");
                 PACKAGE_IN.store(true, Ordering::Relaxed);
                 NET_RES.lock().insert(*token, (hdr_len, pkt_len));
                 self.ack_interrupt();
                 break;
             }
         }
+        self.ack_interrupt();
     }
 }

@@ -47,7 +47,7 @@ clean:
 
 qemu-legacy: kernel $(img)
 # Wait a few seconds, then try to open a connection to the VM so it can test its networking.
-	( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
+	#( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
 	qemu-system-$(arch) \
 	  $(QEMU_ARGS) \
 		-machine virt \
@@ -59,14 +59,14 @@ qemu-legacy: kernel $(img)
 		-device virtio-serial-device,id=virtio-serial0 \
 		-device virtio-gpu-device \
 		-device virtio-net-device,netdev=net0 \
-		-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
+		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-device virtio-keyboard-device \
-#		-device virtio-mouse-device \
+		-device virtio-mouse-device \
 
 
 qemu: kernel $(img)
 # Wait a few seconds, then try to open a connection to the VM so it can test its networking.
-	( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
+	#( sleep 4 && echo "hello" | nc localhost 5555 -N -v) &
 	qemu-system-$(arch) \
 	  $(QEMU_ARGS) \
 		-machine virt \
@@ -79,14 +79,18 @@ qemu: kernel $(img)
 		-device virtio-serial-device,id=virtio-serial0 \
 		-device virtio-gpu-device \
 		-device virtio-net-device,netdev=net0 \
-		-netdev user,id=net0,hostfwd=tcp::5555-:5555 \
+		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-device virtio-keyboard-device \
-#		-device virtio-mouse-device \
+		-device virtio-mouse-device \
 
 $(img):
-	dd if=/dev/zero of=$@ bs=1M count=20
+	dd if=/dev/zero of=$@ bs=1M count=64
 
 run: build qemu-legacy
 run_new: build qemu
+
+
+ping:
+	python ./ping.py 5555
 
 .PHONY: kernel build clean qemu run env $(img)
