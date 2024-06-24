@@ -61,7 +61,7 @@ qemu-legacy: kernel $(img)
 		-device virtio-net-device,netdev=net0 \
 		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-device virtio-tablet-device \
-		-device virtio-mouse-device \
+#		-device virtio-mouse-device \
 
 
 qemu: kernel $(img)
@@ -81,7 +81,7 @@ qemu: kernel $(img)
 		-device virtio-net-device,netdev=net0 \
 		-netdev user,id=net0,hostfwd=tcp::5555-:5555,hostfwd=udp::5555-:5555 \
 		-device virtio-tablet-device \
-		-device virtio-mouse-device \
+#		-device virtio-mouse-device \
 
 $(img):
 	dd if=/dev/zero of=$@ bs=1M count=64

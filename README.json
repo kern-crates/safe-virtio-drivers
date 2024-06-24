@@ -1,0 +1,10 @@
+{
+  "name": "safe-virtio-drivers",
+  "description": "VirtIO guest drivers.",
+  "authors": [{
+    "name": "chenlinfeng ",
+    "email": "chenlinfeng25@outlook.com"
+  }],
+  "keywords": ["virtio", "no_std", "drivers"],
+  "doc_url": "https://github.com/kern-crates/safe-virtio-drivers/blob/main/README.md"
+}
